@@ -10,32 +10,12 @@ from adc_8chan_12bit import Pi_hat_adc
 from i2c import Bus
 
 # Constants
-ADC_DEFAULT_IIC_ADDR = 0x04
+DEFAULT_ADC_ADDR = 0x04
 REG_SET_ADDR = 0xC0
 ADC_CHANNELS = 4  # Each ADC has 4 moisture sensor channels
 WATERING_DURATION = 30  # Default watering duration in seconds
 MONITOR_INTERVAL = 300  # 5 minutes between cycles
 MAX_PUMP_TIME = 300  # 5 minutes maximum pump runtime
-
-
-#!/usr/bin/env python
-
-import time
-import json
-import os
-import smbus2
-import RPi.GPIO as GPIO
-from smbus2 import i2c_msg
-from adc_8chan_12bit import Pi_hat_adc
-from i2c import Bus
-
-# Constants
-DEFAULT_ADC_ADDR = 0x04  # Default address before change
-COMMAND_CHANGE_ADDR = 0x55  # Custom command byte for address change
-ADC_CHANNELS = 4
-WATERING_DURATION = 30
-MONITOR_INTERVAL = 300
-
 
 class I2CDeviceManager:
     def __init__(self, config_file="i2c_devices.json"):
@@ -66,23 +46,22 @@ class I2CDeviceManager:
         return found_devices
 
     def change_stm32_address(self, current_addr, new_addr):
-        """
-        Send command to STM32 to change its I2C address
-        Returns True if successful, False if failed
-        """
+        """Use your ADC's specific address change protocol"""
         try:
-            # Send command format: [0x55, new_address]
-            msg = i2c_msg.write(current_addr, [COMMAND_CHANGE_ADDR, new_addr])
-            self.bus.i2c_rdwr(msg)
-            time.sleep(0.5)  # Allow STM32 to process
+            # Create a temporary ADC instance
+            adc = Pi_hat_adc(addr=current_addr)
+            success = adc.set_i2c_address(new_addr)
 
-            # Verify change
-            try:
-                self.bus.write_quick(new_addr)
-                return True
-            except:
-                print(f"Verification failed - device not responding at {hex(new_addr)}")
-                return False
+            if success:
+                # Verify the change
+                try:
+                    test_adc = Pi_hat_adc(addr=new_addr)
+                    test_adc.get_nchan_ratio_0_1_data(0)  # Simple read to verify
+                    return True
+                except:
+                    print(f"Verification failed - device not responding at {hex(new_addr)}")
+                    return False
+            return False
         except Exception as e:
             print(f"Address change failed: {e}")
             return False
@@ -176,7 +155,11 @@ class SmartFarmSystem:
         # Initialize subsystems
         self.device_manager = I2CDeviceManager()
         self.group_manager = DeviceGroupManager(self.device_manager)
-        self.adc = Pi_hat_adc()
+        self.adc = None  # Will be initialized per-device
+
+    def get_adc_for_device(self, address):
+        """Helper method to get ADC instance for a specific address"""
+        return Pi_hat_adc(addr=address)
 
     def setup_pins(self):
         """Initial hardware setup"""
@@ -272,18 +255,21 @@ class SmartFarmSystem:
         return False
 
     def monitor_cycle(self):
-        """Check all sensors and determine which groups need watering"""
         print("\n[Monitor Cycle] Checking all sensors...")
         groups_to_water = {group: False for group in self.valve_pins.keys()}
 
         for group_name in self.valve_pins:
-            # Get all moisture readings for this group
             moisture_readings = []
             for addr, device in self.device_manager.devices.items():
                 if device.get('group') == group_name:
+                    adc = self.get_adc_for_device(addr)
                     for channel in range(ADC_CHANNELS):
-                        moisture = self.adc.get_nchan_ratio_0_1_data(channel)
-                        moisture_readings.append(moisture / 10)  # Convert 0.1% to %
+                        try:
+                            moisture = adc.get_nchan_ratio_0_1_data(channel)
+                            moisture_readings.append(moisture / 10)  # Convert 0.1% to %
+                        except Exception as e:
+                            print(f"Error reading channel {channel} on device {hex(addr)}: {e}")
+                            moisture_readings.append(100)  # Default to "wet" if error
 
             if moisture_readings:
                 avg_moisture = sum(moisture_readings) / len(moisture_readings)
