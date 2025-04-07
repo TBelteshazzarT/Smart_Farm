@@ -18,28 +18,44 @@ MONITOR_INTERVAL = 300  # 5 minutes between cycles
 MAX_PUMP_TIME = 300  # 5 minutes maximum pump runtime
 
 
+#!/usr/bin/env python
+
+import time
+import json
+import os
+import smbus2
+import RPi.GPIO as GPIO
+from smbus2 import i2c_msg
+from adc_8chan_12bit import Pi_hat_adc
+from i2c import Bus
+
+# Constants
+DEFAULT_ADC_ADDR = 0x04  # Default address before change
+COMMAND_CHANGE_ADDR = 0x55  # Custom command byte for address change
+ADC_CHANNELS = 4
+WATERING_DURATION = 30
+MONITOR_INTERVAL = 300
+
+
 class I2CDeviceManager:
     def __init__(self, config_file="i2c_devices.json"):
-        self.devices = {}  # {address: {'type': str, 'location': str, 'group': str}}
+        self.devices = {}
         self.bus = Bus()
         self.config_file = config_file
         self.load_devices()
 
     def load_devices(self):
-        """Load registered devices from JSON file"""
         if os.path.exists(self.config_file):
             with open(self.config_file, 'r') as f:
                 devices = json.load(f)
                 self.devices = {int(addr, 16): info for addr, info in devices.items()}
 
     def save_devices(self):
-        """Save registered devices to JSON file"""
         with open(self.config_file, 'w') as f:
             devices = {hex(addr): info for addr, info in self.devices.items()}
             json.dump(devices, f, indent=4)
 
     def scan_bus(self):
-        """Scan I2C bus and detect all connected devices"""
         found_devices = []
         for address in range(0x03, 0x77):
             try:
@@ -49,76 +65,65 @@ class I2CDeviceManager:
                 pass
         return found_devices
 
-    def verify_device_address(self, expected_addr):
-        """Check if device is active at given address"""
+    def change_stm32_address(self, current_addr, new_addr):
+        """
+        Send command to STM32 to change its I2C address
+        Returns True if successful, False if failed
+        """
         try:
-            temp_bus = smbus2.SMBus(self.bus.bus)
-            temp_bus.write_quick(expected_addr)
-            return True
-        except:
+            # Send command format: [0x55, new_address]
+            msg = i2c_msg.write(current_addr, [COMMAND_CHANGE_ADDR, new_addr])
+            self.bus.i2c_rdwr(msg)
+            time.sleep(0.5)  # Allow STM32 to process
+
+            # Verify change
+            try:
+                self.bus.write_quick(new_addr)
+                return True
+            except:
+                print(f"Verification failed - device not responding at {hex(new_addr)}")
+                return False
+        except Exception as e:
+            print(f"Address change failed: {e}")
             return False
 
-    def register_device(self, device_type, location, group, default_addr=0x04):
-        """Enhanced device registration with proper EEPROM handling"""
-        found = self.scan_bus()
+    def register_device(self, device_type, location, group):
+        """
+        New registration flow with STM32 address change support
+        """
+        print("\n=== ADC Registration ===")
+        print("1. Connect ONE ADC to the system now")
+        input("Press Enter when ready...")
 
-        # If default address is available, use it
-        if default_addr not in found:
-            return self._register_device_at_address(device_type, location, group, default_addr)
+        # Scan for devices
+        found = self.scan_bus()
+        if DEFAULT_ADC_ADDR not in found:
+            print(f"No device found at default address {hex(DEFAULT_ADC_ADDR)}")
+            print("Please check connections or ensure device is in default mode")
+            return None
 
         # Find available address
-        new_addr = self._find_available_address(found, default_addr)
+        new_addr = self._find_available_address(found)
         if new_addr is None:
             print("Error: No available I2C addresses")
             return None
 
-        temp_bus = smbus2.SMBus(self.bus.bus)
-
-        # EEPROM write attempt
-        try:
-            # Write to EEPROM
-            eeprom_addr = 0x00  # Common EEPROM config address
-            temp_bus.write_byte_data(default_addr, eeprom_addr, new_addr)
-            print(f"\nAddress change to {hex(new_addr)} written to EEPROM")
-            print("PLEASE POWER CYCLE THE DEVICE NOW (turn off and on)")
-
-            # Verify at old address first
-            if self.verify_device_address(default_addr):
-                print(f"Device still responds at old address {hex(default_addr)}")
-                print("Waiting for power cycle...")
-
-                # Wait for user to power cycle
-                while True:
-                    if input("Has the device been power cycled? (y/n): ").lower() == 'y':
-                        if self.verify_device_address(new_addr):
-                            print(f"Success! Device now responding at {hex(new_addr)}")
-                            return self._register_device_at_address(device_type, location, group, new_addr)
-                        else:
-                            print(f"Device not found at {hex(new_addr)} after power cycle")
-                            return None
-                    else:
-                        print("Please power cycle the device to continue")
-            else:
-                # Device no longer responds at old address - might have reset
-                if self.verify_device_address(new_addr):
-                    return self._register_device_at_address(device_type, location, group, new_addr)
-                else:
-                    print("Device not responding at either address - please check connections")
-                    return None
-
-        except Exception as e:
-            print(f"EEPROM write failed: {e}")
+        # Attempt address change
+        print(f"Attempting to change address from {hex(DEFAULT_ADC_ADDR)} to {hex(new_addr)}")
+        if not self.change_stm32_address(DEFAULT_ADC_ADDR, new_addr):
+            print("Address change failed - ensure STM32 firmware supports this feature")
             return None
 
-    def _find_available_address(self, used_addresses, default_addr):
-        """Find next available address"""
-        for addr in range(default_addr + 1, 0x77):
+        # Register the device
+        return self._register_device_at_address(device_type, location, group, new_addr)
+
+    def _find_available_address(self, used_addresses):
+        for addr in range(DEFAULT_ADC_ADDR + 1, 0x77):
             if addr not in used_addresses:
                 return addr
         return None
 
     def _register_device_at_address(self, device_type, location, group, address):
-        """Helper to register a device at specific address"""
         self.devices[address] = {
             'type': device_type,
             'location': location,
@@ -384,23 +389,12 @@ class SmartFarmUI:
                 print("Invalid choice")
 
     def add_adc_device(self):
-        """Add a new ADC device with group assignment"""
+        """Updated ADC registration with STM32 address change support"""
         if not self.farm.setup_complete:
             print("Please complete setup first!")
             return
 
         print("\nAdding new ADC device")
-
-        found = self.farm.device_manager.scan_bus()
-        registered = set(self.farm.device_manager.devices.keys())
-        new_devices = [addr for addr in found if addr not in registered]
-
-        if not new_devices:
-            print("No new ADC devices found. Please connect one and try again.")
-            return
-
-        print(f"Found new device at address {hex(new_devices[0])}")
-
         location = input("Enter location/description for this ADC: ")
 
         print("\nAvailable groups:")
@@ -419,15 +413,14 @@ class SmartFarmUI:
             "ADC", location, group_name)
 
         if assigned_addr is None:
-            print("Device registration failed")
             return
 
-        # Only proceed with channel naming if registration was successful
+        # Set channel names
         for channel in range(ADC_CHANNELS):
-            name = input(f"Enter name for channel {channel} (e.g., 'North Bed'): ")
+            name = input(f"Enter name for channel {channel}: ")
             self.farm.device_manager.devices[assigned_addr]['channels'][channel] = name
         self.farm.device_manager.save_devices()
-        print("Channel names saved successfully")
+        print("ADC registration complete!")
 
     def view_system_status(self):
         """Display current system status"""
