@@ -1,18 +1,20 @@
-/* ADC Firmware for STM32F030 - 8-Channel Raspberry Pi Hat */
 #include "stm32f0xx_hal.h"
+#include "stm32f0xx_hal_i2c.h"
+#include "stm32f0xx_hal_adc.h"
 
-// Configuration
+/* Private defines */
 #define DEFAULT_I2C_ADDR         0x04    // Default address
 #define COMMAND_CHANGE_ADDR      0x55    // Command byte
 #define FLASH_ADDR_STORAGE       0x0800FC00  // Flash storage location
 #define NUM_CHANNELS             8       // 8 ADC channels
 
-// Register map (must match Python code)
+/* Register map */
 #define REG_RAW_DATA_START      0x10    // Raw ADC values (0x10-0x17)
 #define REG_VOL_START           0x20    // Voltage values (0x20-0x27)
 #define REG_RTO_START           0x30    // Ratio values (0x30-0x37)
 #define REG_SET_ADDR            0xC0    // Address change register
 
+/* Private typedef */
 typedef struct {
     uint16_t raw_data[NUM_CHANNELS];    // 0x10-0x17
     uint16_t voltage[NUM_CHANNELS];     // 0x20-0x27
@@ -28,10 +30,22 @@ typedef struct {
     uint16_t calibration;
 } ADC_State;
 
+/* Private variables */
 ADC_State adc_state;
 I2C_HandleTypeDef hi2c1;
+ADC_HandleTypeDef hadc;
 
-// Flash write helper
+/* Private function prototypes */
+void SystemClock_Config(void);
+void Write_To_Flash(uint32_t address, uint8_t data);
+HAL_StatusTypeDef Change_I2C_Address(uint8_t new_addr);
+void Update_ADC_Values(void);
+void ADC_Init(void);
+void MX_ADC_Init(void);
+void MX_I2C1_Init(void);
+HAL_StatusTypeDef HAL_I2C_EnableListen_IT(I2C_HandleTypeDef *hi2c);
+
+/* Flash write helper */
 void Write_To_Flash(uint32_t address, uint8_t data) {
     HAL_FLASH_Unlock();
     FLASH_EraseInitTypeDef erase = {
@@ -41,71 +55,126 @@ void Write_To_Flash(uint32_t address, uint8_t data) {
     };
     uint32_t err;
     HAL_FLASHEx_Erase(&erase, &err);
-    HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, address, data);
+    HAL_FLASH_Program(FLASH_TYPEPROGRAM_HALFWORD, address, (uint16_t)data);
     HAL_FLASH_Lock();
 }
 
-// Change I2C address
+/* I2C Listen Mode with Interrupt */
+HAL_StatusTypeDef HAL_I2C_EnableListen_IT(I2C_HandleTypeDef *hi2c) {
+    if(hi2c->State == HAL_I2C_STATE_READY) {
+        hi2c->State = HAL_I2C_STATE_LISTEN;
+        hi2c->Instance->CR2 &= ~I2C_CR2_NACK;
+        __HAL_I2C_ENABLE_IT(hi2c, I2C_IT_ADDRI | I2C_IT_ERRI | I2C_IT_STOPI | I2C_IT_NACKI);
+        return HAL_OK;
+    }
+    return HAL_BUSY;
+}
+
+/* Change I2C address */
 HAL_StatusTypeDef Change_I2C_Address(uint8_t new_addr) {
     if(new_addr < 0x08 || new_addr > 0x77) return HAL_ERROR;
 
     adc_state.i2c_addr = new_addr;
     Write_To_Flash(FLASH_ADDR_STORAGE, new_addr);
 
-    // Reinit I2C with new address
     hi2c1.Instance->OAR1 = (new_addr << 1);
     return HAL_OK;
 }
 
-// I2C Slave Callback
-void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c) {
-    uint8_t rx_data[2];
-    HAL_I2C_Slave_Receive(&hi2c1, rx_data, 2, HAL_MAX_DELAY);
-
-    if(rx_data[0] == REG_SET_ADDR) {
-        Change_I2C_Address(rx_data[1]);
-    }
-}
-
-// Update ADC measurements
+/* Update ADC measurements */
 void Update_ADC_Values() {
     for(uint8_t ch = 0; ch < NUM_CHANNELS; ch++) {
-        // Read actual ADC here - simplified for example
-        adc_state.adc_values[ch] = HAL_ADC_GetValue(&hadc);
+        ADC_ChannelConfTypeDef sConfig = {0};
+        sConfig.Channel = ADC_CHANNEL_0 + ch;
+        sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
+        sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
 
-        // Update registers
-        adc_state.regs->raw_data[ch] = adc_state.adc_values[ch];
-        adc_state.regs->voltage[ch] = (adc_state.adc_values[ch] * 3300) / 4095;
-        adc_state.regs->ratio[ch] = (adc_state.adc_values[ch] * 1000) / 4095;
+        if(HAL_ADC_ConfigChannel(&hadc, &sConfig) == HAL_OK) {
+            HAL_ADC_Start(&hadc);
+            if(HAL_ADC_PollForConversion(&hadc, 10) == HAL_OK) {
+                adc_state.adc_values[ch] = HAL_ADC_GetValue(&hadc);
+                adc_state.regs->raw_data[ch] = adc_state.adc_values[ch];
+                adc_state.regs->voltage[ch] = (adc_state.adc_values[ch] * 3300) / 4095;
+                adc_state.regs->ratio[ch] = (adc_state.adc_values[ch] * 1000) / 4095;
+            }
+        }
     }
 }
 
-// Main Initialization
-void ADC_Init() {
-    // Initialize registers
-    adc_state.regs = (ADC_Registers*)0x40000000; // Example base address
+/* ADC Initialization */
+void MX_ADC_Init(void) {
+    hadc.Instance = ADC1;
+    hadc.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+    hadc.Init.Resolution = ADC_RESOLUTION_12B;
+    hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+    hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
+    hadc.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+    hadc.Init.LowPowerAutoWait = DISABLE;
+    hadc.Init.LowPowerAutoPowerOff = DISABLE;
+    hadc.Init.ContinuousConvMode = DISABLE;
+    hadc.Init.DiscontinuousConvMode = DISABLE;
+    hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+    hadc.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+    hadc.Init.DMAContinuousRequests = DISABLE;
+    hadc.Init.Overrun = ADC_OVR_DATA_OVERWRITTEN;
 
-    // Check for stored address
-    uint8_t stored_addr = *(uint8_t*)FLASH_ADDR_STORAGE;
-    adc_state.i2c_addr = (stored_addr != 0xFF) ? stored_addr : DEFAULT_I2C_ADDR;
+    if(HAL_ADC_Init(&hadc) != HAL_OK) {
+        Error_Handler();
+    }
+}
 
-    // I2C Configuration
+/* I2C Initialization */
+void MX_I2C1_Init(void) {
     hi2c1.Instance = I2C1;
     hi2c1.Init.Timing = 0x2000090E;
     hi2c1.Init.OwnAddress1 = (adc_state.i2c_addr << 1);
     hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-    HAL_I2C_Init(&hi2c1);
+    hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+    hi2c1.Init.OwnAddress2 = 0;
+    hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+    hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
 
-    // Enable I2C interrupts
+    if(HAL_I2C_Init(&hi2c1) != HAL_OK) {
+        Error_Handler();
+    }
+}
+
+/* Main Initialization */
+void ADC_Init() {
+    adc_state.regs = (ADC_Registers*)0x40000000;
+
+    uint8_t stored_addr = *(uint8_t*)FLASH_ADDR_STORAGE;
+    adc_state.i2c_addr = (stored_addr != 0xFF) ? stored_addr : DEFAULT_I2C_ADDR;
+
+    MX_I2C1_Init();
     HAL_I2C_EnableListen_IT(&hi2c1);
+}
+
+/* System Clock Configuration */
+void SystemClock_Config(void) {
+    RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+    RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+    HAL_RCC_OscConfig(&RCC_OscInitStruct);
+
+    RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1;
+    RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+    RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+    RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+    HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0);
 }
 
 int main(void) {
     HAL_Init();
     SystemClock_Config();
+    MX_ADC_Init();
     ADC_Init();
 
-    while (1) {
+    while(1) {
         Update_ADC_Values();
         HAL_Delay(10);
     }
