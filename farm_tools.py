@@ -73,7 +73,9 @@ class I2CDeviceManager:
     def register_device(self, device_type, location, group, default_addr=0x04):
         """Enhanced device registration with proper EEPROM handling"""
         found = self.scan_bus()
+        return self._register_device_at_address(device_type, location, group, default_addr)
 
+        """
         # If default address is available, use it
         if default_addr not in found:
             return self._register_device_at_address(device_type, location, group, default_addr)
@@ -121,7 +123,7 @@ class I2CDeviceManager:
         except Exception as e:
             print(f"EEPROM write failed: {e}")
             return None
-
+        """
     def _find_available_address(self, used_addresses, default_addr):
         """Find next available address"""
         for addr in range(default_addr + 1, 0x77):
