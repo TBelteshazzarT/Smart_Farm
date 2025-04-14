@@ -18,6 +18,10 @@ MONITOR_INTERVAL = 300  # 5 minutes between cycles
 MAX_PUMP_TIME = 300  # 5 minutes maximum pump runtime
 CONFIG_FILE = "farm_config.json"  # Configuration file for pin settings
 
+# Water sensor ADC channels
+TOP_WATER_SENSOR_ADC_CHANNEL = 4  # Channel 5 (0-indexed as 4)
+BOTTOM_WATER_SENSOR_ADC_CHANNEL = 5  # Channel 6 (0-indexed as 5)
+
 
 class I2CDeviceManager:
     def __init__(self, config_file="i2c_devices.json"):
@@ -151,6 +155,185 @@ class DeviceGroupManager:
 
     def get_group_valve_pin(self, group_name):
         return self.groups.get(group_name, {}).get('valve_pin')
+
+
+class SmartFarmSystem:
+    def __init__(self):
+        # Initialize GPIO
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+
+        # These will be set during setup
+        self.water_pump_pin = None
+        self.water_sensors = {}  # {'top': power_pin, 'bottom': power_pin}
+        self.valve_pins = {}  # {group_name: pin}
+        self.group_thresholds = {}  # {group_name: threshold}
+
+        # System state
+        self.fill_in_progress = False
+        self.last_watering_time = 0
+        self.setup_complete = False
+
+        # Initialize subsystems
+        self.device_manager = I2CDeviceManager()
+        self.group_manager = DeviceGroupManager(self.device_manager)
+        self.adc = Pi_hat_adc()
+
+        # Try to load configuration if file exists
+        self.load_config()
+
+    def load_config(self):
+        """Load pin configuration from file if it exists"""
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    config = json.load(f)
+
+                    # Load water pump pin
+                    self.water_pump_pin = config.get('water_pump_pin')
+                    if self.water_pump_pin is not None:
+                        GPIO.setup(self.water_pump_pin, GPIO.OUT)
+                        GPIO.output(self.water_pump_pin, GPIO.LOW)
+
+                    # Load water sensors (now only power pins)
+                    self.water_sensors = config.get('water_sensors', {})
+                    for pin in self.water_sensors.values():
+                        GPIO.setup(pin, GPIO.OUT)
+                        GPIO.output(pin, GPIO.LOW)
+
+                    # Load groups
+                    self.valve_pins = config.get('valve_pins', {})
+                    self.group_thresholds = config.get('group_thresholds', {})
+
+                    # Initialize group manager with loaded groups
+                    for group_name, pin in self.valve_pins.items():
+                        self.group_manager.create_group(group_name, pin)
+                        threshold = self.group_thresholds.get(group_name, 50.0)
+                        self.group_manager.add_to_group(group_name, None)  # Devices will be added separately
+
+                    self.setup_complete = True
+                    print("Configuration loaded successfully from file")
+
+            except Exception as e:
+                print(f"Error loading configuration: {e}")
+                self.setup_complete = False
+
+    def save_config(self):
+        """Save current pin configuration to file"""
+        config = {
+            'water_pump_pin': self.water_pump_pin,
+            'water_sensors': self.water_sensors,  # Now only stores power pins
+            'valve_pins': self.valve_pins,
+            'group_thresholds': self.group_thresholds
+        }
+
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=4)
+            print("Configuration saved successfully")
+        except Exception as e:
+            print(f"Error saving configuration: {e}")
+
+    def setup_pins(self):
+        """Initial hardware setup"""
+        print("\n=== Hardware Setup ===")
+
+        # Water pump pin
+        self.water_pump_pin = int(input("Enter GPIO pin for water pump: "))
+        GPIO.setup(self.water_pump_pin, GPIO.OUT)
+        GPIO.output(self.water_pump_pin, GPIO.LOW)
+
+        # Water sensors (now only need power pins)
+        print("\nWater Sensors Setup:")
+        print("Note: Water sensors will use ADC channels 5 and 6 for reading")
+        top_power_pin = int(input("Enter power pin for top water sensor: "))
+        bottom_power_pin = int(input("Enter power pin for bottom water sensor: "))
+
+        GPIO.setup(top_power_pin, GPIO.OUT)
+        GPIO.setup(bottom_power_pin, GPIO.OUT)
+        GPIO.output(top_power_pin, GPIO.LOW)
+        GPIO.output(bottom_power_pin, GPIO.LOW)
+
+        self.water_sensors = {
+            'top': top_power_pin,
+            'bottom': bottom_power_pin
+        }
+
+        # Groups and valves
+        print("\nGroup Setup:")
+        while True:
+            group_name = input("Enter group name (or 'done' to finish): ")
+            if group_name.lower() == 'done':
+                break
+            valve_pin = int(input(f"Enter valve pin for group '{group_name}': "))
+            threshold = float(input(f"Enter moisture threshold (0-100%) for '{group_name}': "))
+
+            GPIO.setup(valve_pin, GPIO.OUT)
+            GPIO.output(valve_pin, GPIO.LOW)
+            self.valve_pins[group_name] = valve_pin
+            self.group_thresholds[group_name] = threshold
+            self.group_manager.create_group(group_name, valve_pin)
+
+        self.setup_complete = True
+        self.save_config()  # Save configuration after setup
+        print("\nHardware setup complete and saved to configuration!")
+
+    def read_water_sensor(self, sensor):
+        """Read a water sensor (turn on, read via ADC, turn off)"""
+        if sensor not in self.water_sensors:
+            return False
+
+        # Determine ADC channel
+        channel = TOP_WATER_SENSOR_ADC_CHANNEL if sensor == 'top' else BOTTOM_WATER_SENSOR_ADC_CHANNEL
+
+        # Turn on sensor
+        GPIO.output(self.water_sensors[sensor], GPIO.HIGH)
+        time.sleep(0.1)  # Allow sensor to stabilize
+
+        # Read value from ADC
+        try:
+            # Get raw ADC value (0-4095 for 12-bit ADC)
+            raw_value = self.adc.get_nchan_adc_data(channel)
+            # Convert to boolean (wet/dry) - threshold may need adjustment
+            value = raw_value > 1000  # Example threshold, adjust based on your sensor
+        except Exception as e:
+            print(f"Error reading ADC channel {channel}: {e}")
+            value = False
+
+        # Turn off sensor
+        GPIO.output(self.water_sensors[sensor], GPIO.LOW)
+
+        return value
+
+    # ... (keep all other methods unchanged) ...
+
+
+class SmartFarmUI:
+
+
+# ... (keep existing SmartFarmUI class unchanged) ...
+
+#!/usr/bin/env python
+
+import time
+import json
+import os
+import smbus2
+import RPi.GPIO as GPIO
+from smbus2 import i2c_msg
+from adc_8chan_12bit import Pi_hat_adc
+from i2c import Bus
+
+# Constants
+ADC_DEFAULT_IIC_ADDR = 0x04
+REG_SET_ADDR = 0xC0
+ADC_CHANNELS = 4  # Each ADC has 4 moisture sensor channels
+WATERING_DURATION = 30  # Default watering duration in seconds
+MONITOR_INTERVAL = 300  # 5 minutes between cycles
+MAX_PUMP_TIME = 300  # 5 minutes maximum pump runtime
+CONFIG_FILE = "farm_config.json"  # Configuration file for pin settings
+
+
 
 class SmartFarmSystem:
     def __init__(self):
@@ -403,7 +586,6 @@ class SmartFarmSystem:
                 GPIO.output(pin, GPIO.LOW)
             for sensor in self.water_sensors.values():
                 GPIO.output(sensor['power'], GPIO.LOW)
-
 
 class SmartFarmUI:
     def __init__(self, farm_system):
