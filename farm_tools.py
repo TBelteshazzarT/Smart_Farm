@@ -10,24 +10,13 @@ from adc_8chan_12bit import Pi_hat_adc
 from i2c import Bus
 
 # Constants
-#!/usr/bin/env python
-
-import time
-import json
-import os
-import smbus2
-import RPi.GPIO as GPIO
-from smbus2 import i2c_msg
-from adc_8chan_12bit import Pi_hat_adc
-from i2c import Bus
-
-# Constants
 ADC_DEFAULT_IIC_ADDR = 0x04
 REG_SET_ADDR = 0xC0
 ADC_CHANNELS = 4  # Each ADC has 4 moisture sensor channels
 WATERING_DURATION = 30  # Default watering duration in seconds
 MONITOR_INTERVAL = 300  # 5 minutes between cycles
 MAX_PUMP_TIME = 300  # 5 minutes maximum pump runtime
+CONFIG_FILE = "farm_config.json"  # Configuration file for pin settings
 
 
 class I2CDeviceManager:
@@ -144,7 +133,6 @@ class I2CDeviceManager:
         print(f"Device successfully registered at {hex(address)}")
         return address
 
-
 class DeviceGroupManager:
     def __init__(self, device_manager):
         self.device_manager = device_manager
@@ -163,7 +151,6 @@ class DeviceGroupManager:
 
     def get_group_valve_pin(self, group_name):
         return self.groups.get(group_name, {}).get('valve_pin')
-
 
 class SmartFarmSystem:
     def __init__(self):
@@ -186,6 +173,62 @@ class SmartFarmSystem:
         self.device_manager = I2CDeviceManager()
         self.group_manager = DeviceGroupManager(self.device_manager)
         self.adc = Pi_hat_adc()
+
+        # Try to load configuration if file exists
+        self.load_config()
+
+    def load_config(self):
+        """Load pin configuration from file if it exists"""
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    config = json.load(f)
+
+                    # Load water pump pin
+                    self.water_pump_pin = config.get('water_pump_pin')
+                    if self.water_pump_pin is not None:
+                        GPIO.setup(self.water_pump_pin, GPIO.OUT)
+                        GPIO.output(self.water_pump_pin, GPIO.LOW)
+
+                    # Load water sensors
+                    self.water_sensors = config.get('water_sensors', {})
+                    for sensor in self.water_sensors.values():
+                        GPIO.setup(sensor['power'], GPIO.OUT)
+                        GPIO.setup(sensor['read'], GPIO.IN)
+                        GPIO.output(sensor['power'], GPIO.LOW)
+
+                    # Load groups
+                    self.valve_pins = config.get('valve_pins', {})
+                    self.group_thresholds = config.get('group_thresholds', {})
+
+                    # Initialize group manager with loaded groups
+                    for group_name, pin in self.valve_pins.items():
+                        self.group_manager.create_group(group_name, pin)
+                        threshold = self.group_thresholds.get(group_name, 50.0)
+                        self.group_manager.add_to_group(group_name, None)  # Devices will be added separately
+
+                    self.setup_complete = True
+                    print("Configuration loaded successfully from file")
+
+            except Exception as e:
+                print(f"Error loading configuration: {e}")
+                self.setup_complete = False
+
+    def save_config(self):
+        """Save current pin configuration to file"""
+        config = {
+            'water_pump_pin': self.water_pump_pin,
+            'water_sensors': self.water_sensors,
+            'valve_pins': self.valve_pins,
+            'group_thresholds': self.group_thresholds
+        }
+
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=4)
+            print("Configuration saved successfully")
+        except Exception as e:
+            print(f"Error saving configuration: {e}")
 
     def setup_pins(self):
         """Initial hardware setup"""
@@ -222,7 +265,8 @@ class SmartFarmSystem:
             self.group_manager.create_group(group_name, valve_pin)
 
         self.setup_complete = True
-        print("\nHardware setup complete!")
+        self.save_config()  # Save configuration after setup
+        print("\nHardware setup complete and saved to configuration!")
 
     def read_water_sensor(self, sensor):
         """Read a water sensor (turn on, read, turn off)"""
