@@ -12,15 +12,15 @@ from i2c import Bus
 # Constants
 ADC_DEFAULT_IIC_ADDR = 0x04
 REG_SET_ADDR = 0xC0
-ADC_CHANNELS = 4  # Each ADC has 4 moisture sensor channels
+Moisture_Channels = [0,2,4,6]  # Each ADC has 4 moisture sensor channels
 WATERING_DURATION = 30  # Default watering duration in seconds
 MONITOR_INTERVAL = 300  # 5 minutes between cycles
 MAX_PUMP_TIME = 300  # 5 minutes maximum pump runtime
 CONFIG_FILE = "farm_config.json"  # Configuration file for pin settings
 
 # Water sensor ADC channels
-TOP_WATER_SENSOR_ADC_CHANNEL = 4  # Channel 5 (0-indexed as 4)
-BOTTOM_WATER_SENSOR_ADC_CHANNEL = 3  # Channel 6 (0-indexed as 5)changed to avoid error
+TOP_WATER_SENSOR_ADC_CHANNEL = 5  # Channel
+BOTTOM_WATER_SENSOR_ADC_CHANNEL = 7  # Channel
 WATER_SENSOR_THRESHOLD = 1000  # Threshold for wet/dry detection (adjust as needed)
 
 
@@ -82,7 +82,7 @@ class I2CDeviceManager:
             'type': device_type,
             'location': location,
             'group': group,
-            'channels': [None] * ADC_CHANNELS,
+            'channels': Moisture_Channels,
             'last_seen': time.time()
         }
         self.save_devices()
@@ -307,7 +307,7 @@ class SmartFarmSystem:
             moisture_readings = []
             for addr, device in self.device_manager.devices.items():
                 if device.get('group') == group_name:
-                    for channel in range(ADC_CHANNELS):
+                    for channel in Moisture_Channels:
                         moisture = self.adc.get_nchan_ratio_0_1_data(channel)
                         moisture_readings.append(moisture / 10)  # Convert 0.1% to %
 
@@ -454,7 +454,7 @@ class SmartFarmUI:
             return
 
         # Only proceed with channel naming if registration was successful
-        for channel in range(ADC_CHANNELS):
+        for channel in Moisture_Channels:
             name = input(f"Enter name for channel {channel} (e.g., 'North Bed'): ")
             self.farm.device_manager.devices[assigned_addr]['channels'][channel] = name
         self.farm.device_manager.save_devices()
@@ -488,7 +488,7 @@ class SmartFarmUI:
 
         for addr, device in self.farm.device_manager.devices.items():
             if device['type'] == 'ADC':
-                for channel in range(ADC_CHANNELS):
+                for channel in Moisture_Channels:
                     moisture = self.farm.adc.get_nchan_ratio_0_1_data(channel)
                     print("{:<10} {:<15} {:<10} {:<10.1f}%".format(
                         device['group'],
