@@ -20,7 +20,7 @@ CONFIG_FILE = "farm_config.json"  # Configuration file for pin settings
 
 # Water sensor ADC channels
 TOP_WATER_SENSOR_ADC_CHANNEL = 4  # Channel 5 (0-indexed as 4)
-BOTTOM_WATER_SENSOR_ADC_CHANNEL = 5  # Channel 6 (0-indexed as 5)
+BOTTOM_WATER_SENSOR_ADC_CHANNEL = 3  # Channel 6 (0-indexed as 5)changed to avoid error
 WATER_SENSOR_THRESHOLD = 1000  # Threshold for wet/dry detection (adjust as needed)
 
 
