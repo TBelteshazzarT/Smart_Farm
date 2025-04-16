@@ -246,7 +246,7 @@ class SmartFarmSystem:
         # Read value from ADC
         try:
             # Get raw ADC value (0-4095 for 12-bit ADC)
-            raw_value = self.adc.get_nchan_adc_data(channel)
+            raw_value = self.adc.get_nchan_adc_raw_data(channel)
             # Convert to boolean (wet/dry)
             value = raw_value > WATER_SENSOR_THRESHOLD
         except Exception as e:
