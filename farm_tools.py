@@ -241,7 +241,7 @@ class SmartFarmSystem:
 
         # Turn on sensor
         GPIO.output(self.water_sensors[sensor], GPIO.HIGH)
-        time.sleep(0.1)  # Allow sensor to stabilize
+        time.sleep(1)  # Allow sensor to stabilize
 
         # Read value from ADC
         try:
@@ -453,12 +453,12 @@ class SmartFarmUI:
             print("Device registration failed")
             return
 
-        # Only proceed with channel naming if registration was successful
-        for channel in Moisture_Channels:
+        # Only proceed with channel naming if registration was successful (disabled)
+        '''for channel in Moisture_Channels:
             name = input(f"Enter name for channel {channel} (e.g., 'North Bed'): ")
-            self.farm.device_manager.devices[assigned_addr]['channels'][channel] = name
+            self.farm.device_manager.devices[assigned_addr]['channels'][channel] = name'''
         self.farm.device_manager.save_devices()
-        print("Channel names saved successfully")
+        print("Device saved successfully")
 
     def view_system_status(self):
         """Display current system status"""
@@ -493,7 +493,7 @@ class SmartFarmUI:
                     print("{:<10} {:<15} {:<10} {:<10.1f}%".format(
                         device['group'],
                         device['location'],
-                        device['channels'][channel] or str(channel),
+                        str(channel),
                         moisture / 10))
 
 
