@@ -339,8 +339,6 @@ class SmartFarmSystem:
             GPIO.output(self.water_pump_pin, GPIO.LOW)
             for pin in self.valve_pins.values():
                 GPIO.output(pin, GPIO.LOW)
-            for pin in self.water_sensors.values():
-                GPIO.output(pin, GPIO.LOW)
 
 
 class SmartFarmUI:
