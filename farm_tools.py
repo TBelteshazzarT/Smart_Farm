@@ -134,6 +134,10 @@ class SmartFarmSystem:
         # Try to load configuration if file exists
         self.load_config()
 
+    def calibrate_moisture_reading(self, value):
+        """Converts the raw value from the moisture sensor into a percent such that 100% is fully wet"""
+        return ((250-(value-370))/250)*100
+
     def load_config(self):
         """Load pin configuration from file if it exists"""
         if os.path.exists(CONFIG_FILE):
@@ -275,7 +279,7 @@ class SmartFarmSystem:
                 if device.get('group') == group_name:
                     for channel in Moisture_Channels:
                         moisture = self.adc.get_nchan_ratio_0_1_data(channel)
-                        moisture_readings.append((150-(moisture-370))/150)  # Calibration
+                        moisture_readings.append(self.calibrate_moisture_reading(moisture))  # Calibration
 
             if moisture_readings:
                 avg_moisture = sum(moisture_readings) / len(moisture_readings)
@@ -457,7 +461,7 @@ class SmartFarmUI:
                         device['group'],
                         device['location'],
                         str(channel),
-                        (150-(moisture-370))/150)) # calibrated
+                        self.farm.calibrate_moisture_reading(moisture))) # calibrated
 
 
 if __name__ == "__main__":
