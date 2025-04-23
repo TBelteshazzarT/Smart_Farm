@@ -275,7 +275,7 @@ class SmartFarmSystem:
                 if device.get('group') == group_name:
                     for channel in Moisture_Channels:
                         moisture = self.adc.get_nchan_ratio_0_1_data(channel)
-                        moisture_readings.append(moisture)  # Convert 0.1% to % /10
+                        moisture_readings.append((150-(moisture-370))/150)  # Calibration
 
             if moisture_readings:
                 avg_moisture = sum(moisture_readings) / len(moisture_readings)
@@ -403,7 +403,7 @@ class SmartFarmUI:
             print(f"{i}. {group}")
 
         try:
-            group_choice = int(input("Select group for this ADC: ")) - 1
+            group_choice = int(input("Select group for this ADC: ")) - 1m
             group_name = groups[group_choice]
         except (ValueError, IndexError):
             print("Invalid group selection")
@@ -457,7 +457,7 @@ class SmartFarmUI:
                         device['group'],
                         device['location'],
                         str(channel),
-                        moisture)) # removed /10 to get raw value
+                        (150-(moisture-370))/150)) # calibrated
 
 
 if __name__ == "__main__":
