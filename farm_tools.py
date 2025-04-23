@@ -457,7 +457,7 @@ class SmartFarmUI:
                         device['group'],
                         device['location'],
                         str(channel),
-                        moisture / 10))
+                        moisture)) # removed /10 to get raw value
 
 
 if __name__ == "__main__":
