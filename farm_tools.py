@@ -403,7 +403,7 @@ class SmartFarmUI:
             print(f"{i}. {group}")
 
         try:
-            group_choice = int(input("Select group for this ADC: ")) - 1m
+            group_choice = int(input("Select group for this ADC: ")) - 1
             group_name = groups[group_choice]
         except (ValueError, IndexError):
             print("Invalid group selection")
