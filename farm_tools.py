@@ -275,7 +275,7 @@ class SmartFarmSystem:
                 if device.get('group') == group_name:
                     for channel in Moisture_Channels:
                         moisture = self.adc.get_nchan_ratio_0_1_data(channel)
-                        moisture_readings.append(moisture / 10)  # Convert 0.1% to %
+                        moisture_readings.append(moisture)  # Convert 0.1% to % /10
 
             if moisture_readings:
                 avg_moisture = sum(moisture_readings) / len(moisture_readings)
