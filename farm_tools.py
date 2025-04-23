@@ -98,7 +98,8 @@ class DeviceGroupManager:
     def create_group(self, group_name, valve_pin):
         self.groups[group_name] = {'devices': [], 'valve_pin': valve_pin}
         GPIO.setup(valve_pin, GPIO.OUT)
-        GPIO.output(valve_pin, GPIO.LOW)
+        # Active Low
+        GPIO.output(valve_pin, GPIO.HIGH)
 
     def add_to_group(self, group_name, address):
         if group_name in self.groups and address in self.device_manager.devices:
@@ -149,7 +150,8 @@ class SmartFarmSystem:
                     self.water_pump_pin = config.get('water_pump_pin')
                     if self.water_pump_pin is not None:
                         GPIO.setup(self.water_pump_pin, GPIO.OUT)
-                        GPIO.output(self.water_pump_pin, GPIO.LOW)
+                        # Active Low
+                        GPIO.output(self.water_pump_pin, GPIO.HIGH)
 
 
 
@@ -192,7 +194,8 @@ class SmartFarmSystem:
         # Water pump pin
         self.water_pump_pin = int(input("Enter GPIO pin for water pump: "))
         GPIO.setup(self.water_pump_pin, GPIO.OUT)
-        GPIO.output(self.water_pump_pin, GPIO.LOW)
+        # Active Low
+        GPIO.output(self.water_pump_pin, GPIO.HIGH)
 
         # Groups and valves
         print("\nGroup Setup:")
@@ -204,7 +207,8 @@ class SmartFarmSystem:
             threshold = float(input(f"Enter moisture threshold (0-100%) for '{group_name}': "))
 
             GPIO.setup(valve_pin, GPIO.OUT)
-            GPIO.output(valve_pin, GPIO.LOW)
+            # Active Low
+            GPIO.output(valve_pin, GPIO.HIGH)
             self.valve_pins[group_name] = valve_pin
             self.group_thresholds[group_name] = threshold
             self.group_manager.create_group(group_name, valve_pin)
@@ -248,21 +252,22 @@ class SmartFarmSystem:
 
         if not bottom_sensor:
             print("Water level low - starting pump")
-            GPIO.output(self.water_pump_pin, GPIO.HIGH)
+            # Active Low
+            GPIO.output(self.water_pump_pin, GPIO.LOW)
             self.fill_in_progress = True
 
             # Monitor top sensor until full or timeout
             while time.time() - start_time < MAX_PUMP_TIME:
                 top_wet = self.read_water_sensor('top')
                 if top_wet:
-                    GPIO.output(self.water_pump_pin, GPIO.LOW)
+                    GPIO.output(self.water_pump_pin, GPIO.HIGH)
                     self.fill_in_progress = False
                     print("Tank filled")
                     return True
                 time.sleep(1)
 
             # Timeout reached
-            GPIO.output(self.water_pump_pin, GPIO.LOW)
+            GPIO.output(self.water_pump_pin, GPIO.HIGH)
             print("Pump timeout reached - stopping pump")
             return False
         return False
@@ -297,8 +302,7 @@ class SmartFarmSystem:
         for group_name, should_water in groups_to_water.items():
             if should_water:
                 print(f"\n[Watering Cycle] Watering group '{group_name}' for {WATERING_DURATION} seconds")
-                GPIO.output(self.valve_pins[group_name], GPIO.HIGH)
-                GPIO.output(self.water_pump_pin, GPIO.HIGH)
+                GPIO.output(self.valve_pins[group_name], GPIO.LOW)
 
                 start_time = time.time()
                 while time.time() - start_time < WATERING_DURATION:
@@ -308,8 +312,7 @@ class SmartFarmSystem:
                         break
                     time.sleep(1)
 
-                GPIO.output(self.valve_pins[group_name], GPIO.LOW)
-                GPIO.output(self.water_pump_pin, GPIO.LOW)
+                GPIO.output(self.valve_pins[group_name], GPIO.HIGH)
                 watering_occurred = True
                 self.last_watering_time = time.time()
 
@@ -340,9 +343,9 @@ class SmartFarmSystem:
         except KeyboardInterrupt:
             print("\nStopping system...")
             # Turn off all outputs
-            GPIO.output(self.water_pump_pin, GPIO.LOW)
+            GPIO.output(self.water_pump_pin, GPIO.HIGH)
             for pin in self.valve_pins.values():
-                GPIO.output(pin, GPIO.LOW)
+                GPIO.output(pin, GPIO.HIGH)
 
 
 class SmartFarmUI:
