@@ -119,6 +119,7 @@ class SmartFarmSystem:
 
         # These will be set during setup
         self.water_pump_pin = None
+        self.water_sensor_pin = None
         self.valve_pins = {}  # {group_name: pin}
         self.group_thresholds = {}  # {group_name: threshold}
 
@@ -153,7 +154,12 @@ class SmartFarmSystem:
                         # Active Low
                         GPIO.output(self.water_pump_pin, GPIO.HIGH)
 
-
+                    # Load water sensor pin
+                    self.water_sensor_pin = config.get('water_sensor_pin')
+                    if self.water_sensor_pin is not None:
+                        GPIO.setup(self.water_sensor_pin, GPIO.OUT)
+                        # Active Low
+                        GPIO.output(self.water_sensor_pin, GPIO.HIGH)
 
                     # Load groups
                     self.valve_pins = config.get('valve_pins', {})
@@ -176,6 +182,7 @@ class SmartFarmSystem:
         """Save current pin configuration to file"""
         config = {
             'water_pump_pin': self.water_pump_pin,
+            'water_sensor_pin': self.water_sensor_pin,
             'valve_pins': self.valve_pins,
             'group_thresholds': self.group_thresholds
         }
@@ -196,6 +203,13 @@ class SmartFarmSystem:
         GPIO.setup(self.water_pump_pin, GPIO.OUT)
         # Active Low
         GPIO.output(self.water_pump_pin, GPIO.HIGH)
+
+        # Water sensor pin
+        self.water_sensor_pin = int(input("Enter GPIO pin for water sensor power"
+                                          " (pin that will activate both sensors on the tank): "))
+        GPIO.setup(self.water_sensor_pin, GPIO.OUT)
+        # Active Low
+        GPIO.output(self.water_sensor_pin, GPIO.HIGH)
 
         # Groups and valves
         print("\nGroup Setup:")
@@ -219,6 +233,12 @@ class SmartFarmSystem:
 
     def read_water_sensor(self, sensor):
         """Read a water sensor (turn on, read via ADC, turn off)"""
+        # Turn on water sensor power supply so that they can be read
+        GPIO.output(self.water_sensor_pin, GPIO.LOW)
+
+        # Short wait to ensure the device is on before trying to read
+        time.sleep(0.5)
+
         # Determine ADC channel
         channel = TOP_WATER_SENSOR_ADC_CHANNEL if sensor == 'top' else BOTTOM_WATER_SENSOR_ADC_CHANNEL
 
@@ -231,6 +251,9 @@ class SmartFarmSystem:
         except Exception as e:
             print(f"Error reading ADC channel {channel}: {e}")
             value = False
+
+        # Turn the water sensor power supply back off
+        GPIO.output(self.water_sensor_pin, GPIO.HIGH)
         return value
 
     def check_water_level(self):
@@ -242,11 +265,12 @@ class SmartFarmSystem:
 
     def pump_cycle(self, bottom_sensor):
         """Handle water tank filling if needed"""
-        print(bottom_sensor)
+        print("\n[Pump Cycle] Checking water level...")
         if bottom_sensor:
+            print("\n Water level within acceptable range - skipping pump cycle")
             return False
 
-        print("\n[Pump Cycle] Checking water level...")
+
         start_time = time.time()
 
 
