@@ -282,13 +282,13 @@ class SmartFarmSystem:
 
             # Monitor top sensor until full or timeout
             while time.time() - start_time < MAX_PUMP_TIME:
-                top_wet = self.read_water_sensor('top')
+                '''top_wet = self.read_water_sensor('top')
                 if top_wet:
                     GPIO.output(self.water_pump_pin, GPIO.HIGH)
                     self.fill_in_progress = False
                     print("Tank filled")
                     return True
-                time.sleep(1)
+                time.sleep(1)'''
 
             # Timeout reached
             GPIO.output(self.water_pump_pin, GPIO.HIGH)
