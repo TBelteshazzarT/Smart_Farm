@@ -13,9 +13,9 @@ from i2c import Bus
 ADC_DEFAULT_IIC_ADDR = 0x04
 REG_SET_ADDR = 0xC0
 Moisture_Channels = [0,2,4,6]  # Each ADC has 4 moisture sensor channels
-WATERING_DURATION = 30  # Default watering duration in seconds
-MONITOR_INTERVAL = 300  # 5 minutes between cycles
-MAX_PUMP_TIME = 300  # 5 minutes maximum pump runtime
+WATERING_DURATION = 60  # Default watering duration in seconds
+MONITOR_INTERVAL = 15  # 15 sec between cycles
+MAX_PUMP_TIME = 45  # 45 sec maximum pump runtime
 CONFIG_FILE = "farm_config.json"  # Configuration file for pin settings
 
 # Water sensor ADC channels
@@ -266,7 +266,7 @@ class SmartFarmSystem:
     def pump_cycle(self, bottom_sensor):
         """Handle water tank filling if needed"""
         print("\n[Pump Cycle] Checking water level...")
-        if bottom_sensor:
+        if not bottom_sensor: # remove the not later
             print("\n Water level within acceptable range - skipping pump cycle")
             return False
 
@@ -274,7 +274,7 @@ class SmartFarmSystem:
         start_time = time.time()
 
 
-        if not bottom_sensor:
+        if bottom_sensor: # replace true with not bottom_sensor
             print("Water level low - starting pump")
             # Active Low
             GPIO.output(self.water_pump_pin, GPIO.LOW)
@@ -349,11 +349,12 @@ class SmartFarmSystem:
             return
 
         try:
+            watering_occurred = False
             while True:
                 print("\n=== Starting New Cycle ===")
 
                 # 1. Pump cycle
-                self.pump_cycle(self.read_water_sensor('bottom'))
+                self.pump_cycle(watering_occurred) # replace augment with self.read_water_sensor('bottom')
 
                 # 2. Monitoring cycle
                 groups_to_water = self.monitor_cycle()
