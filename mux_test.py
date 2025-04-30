@@ -1,55 +1,76 @@
 import time
 import smbus
+from functools import partial
 
-# Hardware Configuration
-TCA9548A_ADDR = 0x70  # Mux address
-BUS_NUMBER = 1  # 1 for Pi 3/4, 0 for older Pis
-SCAN_DELAY = 0.1  # Delay for I2C stability
+# Hardware Config
+TCA9548A_ADDR = 0x70
+BUS_NUMBER = 1
+SCAN_DELAY = 0.15  # Increased delay for stability
+
+# ADC Configuration
+ADC_PINS = [0, 1, 2, 3, 6, 7, 18, 19, 20]
+SEESAW_ADC_BASE = 0x09
+ADC_READ_DELAY = 0.05  # Longer delay for ADC conversion
 
 
 class TCA9548A:
-    def __init__(self, bus, address=TCA9548A_ADDR):
+    def __init__(self, bus):
         self.bus = bus
-        self.address = address
 
     def select_channel(self, channel):
-        """Select a single channel (0-7)"""
+        """Select channel with verification"""
         try:
-            self.bus.write_byte(self.address, 1 << channel)
+            # Disable all channels first
+            self.bus.write_byte(TCA9548A_ADDR, 0x00)
             time.sleep(SCAN_DELAY)
+
+            # Enable target channel
+            self.bus.write_byte(TCA9548A_ADDR, 1 << channel)
+            time.sleep(SCAN_DELAY)
+
+            # Verify selection
+            active = self.bus.read_byte(TCA9548A_ADDR)
+            if active != (1 << channel):
+                raise IOError(f"Channel {channel} not activated")
             return True
         except Exception as e:
-            print(f"Mux channel {channel} error: {e}")
+            print(f"Mux Error (CH{channel}): {str(e)}")
             return False
 
-    def scan_channel(self, channel):
-        """Scan devices on specific channel (like code 1)"""
-        devices = []
-        if self.select_channel(channel):
-            for addr in range(0x03, 0x78):
-                try:
-                    self.bus.write_quick(addr)
-                    devices.append(addr)
-                except:
-                    pass
-        return devices
 
-
-class ATtiny817_ADC:
+class SeesawADC:
     def __init__(self, bus, address):
         self.bus = bus
         self.address = address
 
+    def _read_reg(self, reg, length=2):
+        """Generic register read with retries"""
+        for _ in range(3):  # Retry up to 3 times
+            try:
+                return self.bus.read_i2c_block_data(self.address, reg, length)
+            except OSError as e:
+                if e.errno == 121:  # Remote I/O error
+                    time.sleep(0.1)
+                    continue
+                raise
+        raise IOError(f"Failed after 3 retries (reg 0x{reg:02x})")
+
     def read_adc(self, pin):
-        """Read ADC value from specified pin (like code 2)"""
+        """Read ADC pin with proper seesaw protocol"""
         try:
-            # Seesaw protocol for ADC
-            self.bus.write_i2c_block_data(self.address, 0x09, [pin])
-            time.sleep(0.02)
-            data = self.bus.read_i2c_block_data(self.address, 0x09, 2)
-            return (data[0] << 8 | data[1]) & 0x3FF  # 10-bit value
+            # Write pin number to ADC register
+            self.bus.write_i2c_block_data(
+                self.address,
+                SEESAW_ADC_BASE,
+                [pin & 0xFF]
+            )
+            time.sleep(ADC_READ_DELAY)  # Critical for conversion
+
+            # Read 2-byte result
+            data = self._read_reg(SEESAW_ADC_BASE)
+            return (data[0] << 8) | data[1]
         except Exception as e:
-            print(f"Read error: {e}")
+            print(f"ADC Read Error (Pin {pin}): {str(e)}")
             return None
 
 
@@ -57,35 +78,45 @@ class ATtiny817_ADC:
 bus = smbus.SMBus(BUS_NUMBER)
 mux = TCA9548A(bus)
 
-# 1. First scan all channels (like code 1)
-print("=== Scanning all channels ===")
+# Scan for devices
+print("=== Scanning for ADCs ===")
+ADC_ADDRESS = None
+TARGET_CHANNEL = None
+
 for channel in range(8):
-    devices = mux.scan_channel(channel)
-    print(f"Channel {channel}: {[hex(x) for x in devices if x != 0x70]}")
+    if mux.select_channel(channel):
+        for addr in [0x49, 0x4A, 0x4B]:  # Common seesaw addresses
+            try:
+                bus.write_quick(addr)
+                print(f"Found device at 0x{addr:02x} (CH{channel})")
+                # Test if it's a seesaw
+                test_adc = SeesawADC(bus, addr)
+                if test_adc.read_adc(0) is not None:  # Test pin 0
+                    ADC_ADDRESS = addr
+                    TARGET_CHANNEL = channel
+                    print(f"✓ Confirmed ADC at 0x{addr:02x} (CH{channel})")
+                    break
+            except:
+                pass
 
-# 2. Then read from specific channel (like code 2)
-TARGET_CHANNEL = 1  # Change to your channel
-ADC_ADDRESS = 0x49  # Change to your ADC address
+if not ADC_ADDRESS:
+    print("No valid ADC found!")
+    exit()
 
-if mux.select_channel(TARGET_CHANNEL):
-    adc = ATtiny817_ADC(bus, ADC_ADDRESS)
-
-    # Continuous reading
-    try:
-        print(f"\n=== Reading ADC at 0x{ADC_ADDRESS:02x} on channel {TARGET_CHANNEL} ===")
-        while True:
-            # Read all valid pins (0,1,2,3,6,7,18,19,20)
-            for pin in [0, 1, 2, 3, 6, 7, 18, 19, 20]:
-                val = adc.read_adc(pin)
-                if val is not None:
-                    voltage = (val / 1023) * 3.3  # Convert to voltage
-                    print(f"Pin {pin}: {voltage:.2f}V (raw: {val})")
-                else:
-                    print(f"Pin {pin}: Read failed")
-            print("-----")
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nStopping...")
+# Continuous reading
+adc = SeesawADC(bus, ADC_ADDRESS)
+try:
+    while True:
+        if mux.select_channel(TARGET_CHANNEL):
+            print(f"\nReading ADC 0x{ADC_ADDRESS:02x} (CH{TARGET_CHANNEL}):")
+            for pin in ADC_PINS:
+                raw = adc.read_adc(pin)
+                if raw is not None:
+                    voltage = (raw / 1023) * 3.3
+                    print(f"  Pin {pin}: {voltage:.2f}V (raw: {raw})")
+        time.sleep(1)
+except KeyboardInterrupt:
+    print("\nStopping...")
 finally:
-bus.write_byte(TCA9548A_ADDR, 0x00)  # Reset mux
-bus.close()
+    bus.write_byte(TCA9548A_ADDR, 0x00)
+    bus.close()
