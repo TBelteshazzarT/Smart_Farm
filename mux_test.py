@@ -1,12 +1,10 @@
 import time
 import smbus
 
-# I2C addresses
+# Configuration
 TCA9548A_ADDR = 0x70
 ATTINY817_ADDR = 0x36  # Default Seesaw address
-
-# Initialize I2C bus (1 for newer Pi, 0 for very old Pi)
-bus = smbus.SMBus(1)
+BUS_NUMBER = 1  # Try 0 if not working
 
 
 class TCA9548A:
@@ -15,9 +13,15 @@ class TCA9548A:
         self.address = address
 
     def select_channel(self, channel):
-        """Select one of 0-7 channels"""
+        """Select one of 0-7 channels with debug output"""
+        print(f"Attempting to select channel {channel}...")
         if 0 <= channel <= 7:
-            self.bus.write_byte(self.address, 1 << channel)
+            try:
+                self.bus.write_byte(self.address, 1 << channel)
+                time.sleep(0.01)  # Brief pause
+                print(f"Channel {channel} selected successfully")
+            except Exception as e:
+                print(f"Channel selection failed: {str(e)}")
         else:
             raise ValueError("Channel must be 0-7")
 
@@ -27,76 +31,50 @@ class SeesawADC:
         self.bus = bus
         self.address = address
 
+    def ping(self):
+        """Check if device responds"""
+        try:
+            self.bus.write_quick(self.address)
+            return True
+        except:
+            return False
+
     def read_adc(self, pin):
-        """Read ADC value from specified pin (0-7)"""
+        """Read ADC with better error handling"""
         if pin < 0 or pin > 7:
             raise ValueError("Pin must be 0-7")
 
-        # Seesaw command format for ADC reading
-        # 0x09 = ADC module base address
-        # 0x07 = ADC channel offset
-        self.bus.write_i2c_block_data(self.address, 0x09, [0x07 + pin])
-
-        # Small delay for conversion
-        time.sleep(0.01)
-
-        # Read 2 bytes of data
-        result = self.bus.read_i2c_block_data(self.address, 0x09, 2)
-
-        # Combine bytes into 16-bit value
-        return (result[0] << 8) | result[1]
+        try:
+            # Seesaw command format
+            self.bus.write_i2c_block_data(self.address, 0x09, [0x07 + pin])
+            time.sleep(0.01)
+            result = self.bus.read_i2c_block_data(self.address, 0x09, 2)
+            return (result[0] << 8) | result[1]
+        except Exception as e:
+            print(f"Read error: {str(e)}")
+            return None
 
 
-# Initialize components
+# Initialize with debug
+print("Initializing I2C...")
+bus = smbus.SMBus(BUS_NUMBER)
 mux = TCA9548A(bus)
 adc = SeesawADC(bus)
 
-
-def read_all_channels():
-    """Read all ADC channels on all mux channels"""
-    results = {}
-
-    for mux_channel in range(8):
-        try:
-            # Select mux channel
-            mux.select_channel(mux_channel)
-
-            # Test if device exists by attempting a read
-            adc.read_adc(0)
-
-            # Read all ADC pins if device exists
-            channel_results = {}
-            for pin in range(8):
-                try:
-                    value = adc.read_adc(pin)
-                    voltage = (value / 65535) * 3.3  # Convert to voltage (assuming 3.3V reference)
-                    channel_results[f"Pin {pin}"] = f"{voltage:.2f}V"
-                except IOError:
-                    channel_results[f"Pin {pin}"] = "Error"
-
-            results[f"Mux {mux_channel}"] = channel_results
-
-        except IOError:
-            results[f"Mux {mux_channel}"] = "No device"
-
-    return results
-
-
-# Main reading loop
-try:
-    while True:
-        print("\nReading all ADCs...")
-        readings = read_all_channels()
-
-        for mux_ch, pins in readings.items():
-            print(f"\n{mux_ch}:")
-            if isinstance(pins, dict):
-                for pin, value in pins.items():
-                    print(f"  {pin}: {value}")
-            else:
-                print(f"  {pins}")
-
-        time.sleep(1)
-
-except KeyboardInterrupt:
-    print("\nExiting...")
+# Test detection
+print("\nTesting detection on Mux 0:")
+mux.select_channel(0)
+if adc.ping():
+    print("ADC detected! Reading pins...")
+    for pin in range(8):
+        value = adc.read_adc(pin)
+        if value is not None:
+            voltage = (value / 65535) * 3.3
+            print(f"Pin {pin}: {voltage:.2f}V")
+        else:
+            print(f"Pin {pin}: Read failed")
+else:
+    print("No ADC detected! Check:")
+    print("1. Physical connections")
+    print("2. I2C addresses")
+    print("3. Power supply")
