@@ -2,131 +2,97 @@ import time
 import smbus
 from collections import defaultdict
 
-# Configuration
-TCA9548A_ADDR = 0x70
-BUS_NUMBER = 1
-SCAN_DELAY = 0.1  # Increased delay for reliability
+# Hardware Configuration
+TCA9548A_ADDR = 0x70  # Mux address
+BUS_NUMBER = 1  # 1 for Pi 3/4, 0 for older models
+SCAN_DELAY = 0.1  # Delay for I2C stability
 
 
-class RobustI2CScanner:
+class MuxManager:
     def __init__(self, bus):
         self.bus = bus
 
-    def scan_channel(self, mux_channel=None, retries=3):
-        """Scan with error handling and retries"""
-        found = []
-
-        for attempt in range(retries):
-            try:
-                if mux_channel is not None:
-                    self.bus.write_byte(TCA9548A_ADDR, 1 << mux_channel)
-                    time.sleep(SCAN_DELAY)
-
-                # Quick check if bus is responsive
-                self.bus.write_quick(TCA9548A_ADDR)
-
-                # Scan addresses
-                for addr in range(0x03, 0x78):
-                    try:
-                        self.bus.write_quick(addr)
-                        found.append(addr)
-                        time.sleep(0.005)
-                    except:
-                        pass
-
-                break  # Success - exit retry loop
-
-            except Exception as e:
-                print(f"Attempt {attempt + 1} failed: {str(e)}")
-                if attempt == retries - 1:
-                    raise
-                time.sleep(0.5)
-
-        # Reset mux if used
-        if mux_channel is not None:
-            try:
-                self.bus.write_byte(TCA9548A_ADDR, 0x00)
-            except:
-                pass
-
-        return found
-
-
-# Initialize with error handling
-try:
-    bus = smbus.SMBus(BUS_NUMBER)
-    scanner = RobustI2CScanner(bus)
-
-    print("=== Starting Safe Scan ===")
-
-    # 1. Verify mux is reachable
-    try:
-        bus.write_quick(TCA9548A_ADDR)
-        print("✓ Mux detected at 0x70")
-    except:
-        print("× Mux not responding at 0x70")
-        print("Check:")
-        print("- Mux power (3.3V)")
-        print("- I2C connections (SDA/SCL)")
-        print("- Pull-up resistors (4.7kΩ)")
-        exit()
-
-    # 2. Scan each channel
-    device_map = defaultdict(dict)
-
-    for channel in range(8):
+    def select_channel(self, channel):
+        """Select a mux channel (0-7) and verify isolation"""
         try:
-            print(f"Scanning channel {channel}...", end=' ')
-            found = scanner.scan_channel(channel)
+            # Disable all channels first (reset)
+            self.bus.write_byte(TCA9548A_ADDR, 0x00)
+            time.sleep(SCAN_DELAY)
 
-            if found:
-                print(f"Found: {[hex(x) for x in found]}")
-                for addr in found:
-                    # Quick device verification
-                    try:
-                        bus.write_quick(addr)
-                        device_map[channel][addr] = True
-                        print(f"  ✓ Device responds at 0x{addr:02x}")
-                    except:
-                        print(f"  × No response at 0x{addr:02x}")
-            else:
-                print("No devices")
+            # Enable only the target channel
+            self.bus.write_byte(TCA9548A_ADDR, 1 << channel)
+            time.sleep(SCAN_DELAY)
 
+            # Verify only this channel is active
+            active = self.bus.read_byte(TCA9548A_ADDR)
+            if active != (1 << channel):
+                raise IOError(f"Mux channel {channel} not isolated!")
+
+            return True
         except Exception as e:
-            print(f"Scan failed: {str(e)}")
-            continue
+            print(f"⚠️ Mux channel {channel} error: {e}")
+            return False
 
-    if not device_map:
-        print("No working devices found!")
-        exit()
 
-    # 3. Continuous reading only if devices found
-    print("\n=== Starting Monitoring ===")
-    try:
-        while True:
-            for channel, devices in device_map.items():
-                try:
-                    bus.write_byte(TCA9548A_ADDR, 1 << channel)
-                    time.sleep(SCAN_DELAY)
+class SeesawADC:
+    def __init__(self, bus, address):
+        self.bus = bus
+        self.address = address
 
-                    for addr in devices:
-                        # Implement your actual ADC reading here
-                        print(f"Reading channel {channel}, device 0x{addr:02x}")
-                        # Example: val = read_adc(bus, addr, pin)
-                        # voltage = (val / 65535) * 3.3
+    def read_adc(self, pin):
+        """Read ADC value (0-7) from Seesaw device"""
+        try:
+            # Seesaw protocol: base=0x09, offset=0x07
+            self.bus.write_i2c_block_data(self.address, 0x09, [0x07 + pin])
+            time.sleep(0.02)  # Conversion delay
+            data = self.bus.read_i2c_block_data(self.address, 0x09, 2)
+            return (data[0] << 8) | data[1]  # Combine into 16-bit value
+        except Exception as e:
+            print(f"ADC read error: {e}")
+            return None
 
-                except Exception as e:
-                    print(f"Channel {channel} error: {str(e)}")
 
-            time.sleep(1)
+# Initialize
+bus = smbus.SMBus(BUS_NUMBER)
+mux = MuxManager(bus)
+adc = SeesawADC(bus, 0x49)  # Your ADC address
 
-    except KeyboardInterrupt:
-        print("\nStopped by user")
+# 1. Scan for ADCs on each mux channel
+print("=== Scanning for ADCs on each mux channel ===")
+adc_channels = []
 
+for channel in range(8):
+    if mux.select_channel(channel):
+        try:
+            # Check if ADC responds
+            bus.write_quick(0x49)
+            print(f"✓ Found ADC on Mux Channel {channel}")
+            adc_channels.append(channel)
+        except:
+            print(f"× No ADC on Mux Channel {channel}")
+
+if not adc_channels:
+    print("No ADCs found! Check wiring & power.")
+    exit()
+
+# 2. Continuous reading from detected ADCs
+print("\n=== Starting ADC Readings ===")
+try:
+    while True:
+        for channel in adc_channels:
+            if mux.select_channel(channel):
+                for pin in range(8):  # Read all 8 ADC pins
+                    val = adc.read_adc(pin)
+                    if val is not None:
+                        voltage = (val / 65535) * 3.3  # Convert to voltage
+                        print(f"CH{channel}-Pin{pin}: {voltage:.2f}V (raw: {val})")
+                    else:
+                        print(f"CH{channel}-Pin{pin}: Read failed")
+        print("------------------")
+        time.sleep(1)
+
+except KeyboardInterrupt:
+    print("\nStopping...")
 finally:
-    # Cleanup
-    try:
-        bus.write_byte(TCA9548A_ADDR, 0x00)
-    except:
-        pass
+    bus.write_byte(TCA9548A_ADDR, 0x00)  # Reset mux
     bus.close()
