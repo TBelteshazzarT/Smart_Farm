@@ -1,86 +1,102 @@
 import time
-import board
-import busio
-#from adafruit_tca9548a import TCA9548A
-from adafruit_seesaw.seesaw import Seesaw
-from adafruit_seesaw.analoginput import AnalogInput
-
 import smbus
+
+# I2C addresses
+TCA9548A_ADDR = 0x70
+ATTINY817_ADDR = 0x36  # Default Seesaw address
+
+# Initialize I2C bus (1 for newer Pi, 0 for very old Pi)
+bus = smbus.SMBus(1)
 
 
 class TCA9548A:
-    def __init__(self, bus, address=0x70):
+    def __init__(self, bus, address=TCA9548A_ADDR):
         self.bus = bus
         self.address = address
 
-    def set_channel(self, channel):
+    def select_channel(self, channel):
+        """Select one of 0-7 channels"""
         if 0 <= channel <= 7:
             self.bus.write_byte(self.address, 1 << channel)
-
-# Initialize I2C bus
-i2c = busio.I2C(board.SCL, board.SDA)
-
-# Initialize TCA9548A multiplexer with address 0x70
-mux = TCA9548A(i2c, address=0x70)  # Explicitly set address
-
-# List of ADC channels (pins) you want to read on each ATtiny817
-ADC_CHANNELS = [0, 1, 2, 3, 4, 5, 6, 7]  # Adjust based on your setup
-
-# Dictionary to store ADC objects for each multiplexer channel
-adcs = {}
-
-# Scan for connected ATtiny817 ADCs on each multiplexer channel
-for mux_channel in range(8):
-    try:
-        # Try to initialize an ATtiny817 on this multiplexer channel
-        seesaw = Seesaw(mux[mux_channel], addr=0x36)  # Default ATtiny817 I2C address
-        adcs[mux_channel] = seesaw
-        print(f"Found ATtiny817 on multiplexer channel {mux_channel}")
-    except (ValueError, OSError):
-        print(f"No ATtiny817 found on multiplexer channel {mux_channel}")
-        continue
-
-if not adcs:
-    print("No ATtiny817 ADCs found!")
-    exit()
+        else:
+            raise ValueError("Channel must be 0-7")
 
 
-def read_all_adcs():
-    """Read all ADC channels from all detected ATtiny817 devices"""
-    readings = {}
+class SeesawADC:
+    def __init__(self, bus, address=ATTINY817_ADDR):
+        self.bus = bus
+        self.address = address
 
-    for mux_channel, seesaw in adcs.items():
-        channel_readings = {}
-        for channel in ADC_CHANNELS:
-            try:
-                # Create analog input for this channel
-                analog_in = AnalogInput(seesaw, channel)
-                # Read voltage (0-3.3V)
-                voltage = analog_in.value * 3.3
-                channel_readings[f"Pin {channel}"] = voltage
-            except (ValueError, OSError):
-                channel_readings[f"Pin {channel}"] = None
+    def read_adc(self, pin):
+        """Read ADC value from specified pin (0-7)"""
+        if pin < 0 or pin > 7:
+            raise ValueError("Pin must be 0-7")
 
-        readings[f"Mux Channel {mux_channel}"] = channel_readings
+        # Seesaw command format for ADC reading
+        # 0x09 = ADC module base address
+        # 0x07 = ADC channel offset
+        self.bus.write_i2c_block_data(self.address, 0x09, [0x07 + pin])
 
-    return readings
+        # Small delay for conversion
+        time.sleep(0.01)
+
+        # Read 2 bytes of data
+        result = self.bus.read_i2c_block_data(self.address, 0x09, 2)
+
+        # Combine bytes into 16-bit value
+        return (result[0] << 8) | result[1]
 
 
-# Main loop to continuously read ADC values
+# Initialize components
+mux = TCA9548A(bus)
+adc = SeesawADC(bus)
+
+
+def read_all_channels():
+    """Read all ADC channels on all mux channels"""
+    results = {}
+
+    for mux_channel in range(8):
+        try:
+            # Select mux channel
+            mux.select_channel(mux_channel)
+
+            # Test if device exists by attempting a read
+            adc.read_adc(0)
+
+            # Read all ADC pins if device exists
+            channel_results = {}
+            for pin in range(8):
+                try:
+                    value = adc.read_adc(pin)
+                    voltage = (value / 65535) * 3.3  # Convert to voltage (assuming 3.3V reference)
+                    channel_results[f"Pin {pin}"] = f"{voltage:.2f}V"
+                except IOError:
+                    channel_results[f"Pin {pin}"] = "Error"
+
+            results[f"Mux {mux_channel}"] = channel_results
+
+        except IOError:
+            results[f"Mux {mux_channel}"] = "No device"
+
+    return results
+
+
+# Main reading loop
 try:
     while True:
-        print("\nReading all ADC channels...")
-        all_readings = read_all_adcs()
+        print("\nReading all ADCs...")
+        readings = read_all_channels()
 
-        for mux_channel, channel_readings in all_readings.items():
-            print(f"\n{mux_channel}:")
-            for pin, voltage in channel_readings.items():
-                if voltage is not None:
-                    print(f"  {pin}: {voltage:.2f}V")
-                else:
-                    print(f"  {pin}: Not available")
+        for mux_ch, pins in readings.items():
+            print(f"\n{mux_ch}:")
+            if isinstance(pins, dict):
+                for pin, value in pins.items():
+                    print(f"  {pin}: {value}")
+            else:
+                print(f"  {pins}")
 
-        time.sleep(1)  # Delay between readings
+        time.sleep(1)
 
 except KeyboardInterrupt:
     print("\nExiting...")
