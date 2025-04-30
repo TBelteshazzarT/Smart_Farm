@@ -1,9 +1,10 @@
 import time
 import smbus
+from collections import defaultdict
 
 # Hardware Configuration
 TCA9548A_ADDR = 0x70  # Mux address
-ATTINY817_ADDR = 0x49  # ADC address (confirmed)
+DEFAULT_ADC_ADDR = 0x49  # Default ADC address
 BUS_NUMBER = 1  # 1 for Pi 3/4, 0 for older Pis
 SCAN_DELAY = 0.1  # Delay for I2C stability
 
@@ -55,38 +56,76 @@ class ATtiny817_ADC:
             return None
 
 
+def scan_i2c_addresses(bus, mux_channel=None):
+    """Scan all I2C addresses on a specific mux channel"""
+    found_addresses = []
+    if mux_channel is not None:
+        bus.write_byte(TCA9548A_ADDR, 1 << mux_channel)
+        time.sleep(SCAN_DELAY)
+
+    for addr in range(0x03, 0x78):
+        try:
+            bus.write_quick(addr)
+            found_addresses.append(addr)
+            time.sleep(0.001)
+        except:
+            pass
+
+    if mux_channel is not None:
+        bus.write_byte(TCA9548A_ADDR, 0x00)
+
+    return found_addresses
+
+
 # Initialize
 bus = smbus.SMBus(BUS_NUMBER)
 mux = MuxManager(bus)
-adc = ATtiny817_ADC(bus, ATTINY817_ADDR)
 
-# Debug: Check mux and bus first
 print("=== Debug Steps ===")
+
+# 1. Verify mux is present
 try:
-    print("1. Scanning for mux...", end=" ")
     bus.write_quick(TCA9548A_ADDR)
-    print("✓ Found at 0x70")
+    print("✓ Mux detected at 0x70")
 except:
     print("× Mux missing! Check wiring.")
     exit()
 
-# Debug: Check ADC on specified mux channel
+# 2. Scan for ADCs on target channel
 TARGET_CHANNEL = 1  # Change to your mux channel
-print(f"2. Checking mux channel {TARGET_CHANNEL}...", end=" ")
-if mux.select_channel(TARGET_CHANNEL):
-    print("✓ Activated")
-    print("3. Scanning for ADC...", end=" ")
-    if adc.ping():
-        print("✓ Responding!")
-    else:
-        print("× No response. Check:")
-        print("   - ADC address (0x49)")
-        print("   - Power (3.3V/GND)")
-        print("   - SDA/SCL continuity")
-        exit()
+print(f"\nScanning mux channel {TARGET_CHANNEL}...")
+
+# First try default address
+mux.select_channel(TARGET_CHANNEL)
+adc = ATtiny817_ADC(bus, DEFAULT_ADC_ADDR)
+
+if adc.ping():
+    print(f"✓ Found ADC at default address 0x{DEFAULT_ADC_ADDR:02x}")
 else:
-    print("× Mux channel failed!")
-    exit()
+    print(f"× No ADC at default address 0x{DEFAULT_ADC_ADDR:02x}")
+    print("Scanning all addresses on this channel...")
+
+    found_addresses = scan_i2c_addresses(bus, TARGET_CHANNEL)
+    if found_addresses:
+        print(f"Found devices at: {[hex(x) for x in found_addresses]}")
+
+        # Test each found address to see if it's an ADC
+        for addr in found_addresses:
+            test_adc = ATtiny817_ADC(bus, addr)
+            if test_adc.ping():
+                print(f"✓ Found potential ADC at 0x{addr:02x}")
+                print("Verifying by reading a pin...")
+                val = test_adc.read_adc(0)  # Try reading pin 0
+                if val is not None:
+                    print(f"Confirmed ADC at 0x{addr:02x} (read value: {val})")
+                    adc = test_adc
+                    break
+        else:
+            print("× No valid ADC found on this channel")
+            exit()
+    else:
+        print("× No I2C devices found on this channel")
+        exit()
 
 # Continuous reading
 try:
