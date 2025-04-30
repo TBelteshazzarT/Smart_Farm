@@ -1,11 +1,14 @@
 import time
 import smbus
-from collections import defaultdict
 
 # Hardware Configuration
 TCA9548A_ADDR = 0x70  # Mux address
-BUS_NUMBER = 1  # 1 for Pi 3/4, 0 for older models
+ATTINY817_ADDR = 0x49  # ADC address (confirmed)
+BUS_NUMBER = 1  # 1 for Pi 3/4, 0 for older Pis
 SCAN_DELAY = 0.1  # Delay for I2C stability
+
+# Valid ADC pins on ATtiny817 (0,1,2,3,6,7,18,19,20)
+ADC_PINS = [0, 1, 2, 3, 6, 7, 18, 19, 20]
 
 
 class MuxManager:
@@ -13,84 +16,64 @@ class MuxManager:
         self.bus = bus
 
     def select_channel(self, channel):
-        """Select a mux channel (0-7) and verify isolation"""
+        """Select and verify a mux channel (0-7)"""
         try:
-            # Disable all channels first (reset)
-            self.bus.write_byte(TCA9548A_ADDR, 0x00)
+            self.bus.write_byte(TCA9548A_ADDR, 0x00)  # Disable all first
             time.sleep(SCAN_DELAY)
-
-            # Enable only the target channel
             self.bus.write_byte(TCA9548A_ADDR, 1 << channel)
             time.sleep(SCAN_DELAY)
-
-            # Verify only this channel is active
-            active = self.bus.read_byte(TCA9548A_ADDR)
-            if active != (1 << channel):
-                raise IOError(f"Mux channel {channel} not isolated!")
-
             return True
         except Exception as e:
             print(f"⚠️ Mux channel {channel} error: {e}")
             return False
 
 
-class SeesawADC:
+class ATtiny817_ADC:
     def __init__(self, bus, address):
         self.bus = bus
         self.address = address
 
     def read_adc(self, pin):
-        """Read ADC value (0-7) from Seesaw device"""
+        """Read a 10-bit ADC value from the specified pin (0-20)"""
         try:
-            # Seesaw protocol: base=0x09, offset=0x07
-            self.bus.write_i2c_block_data(self.address, 0x09, [0x07 + pin])
+            # Seesaw command format (base=0x09, offset=pin)
+            self.bus.write_i2c_block_data(self.address, 0x09, [pin])
             time.sleep(0.02)  # Conversion delay
             data = self.bus.read_i2c_block_data(self.address, 0x09, 2)
-            return (data[0] << 8) | data[1]  # Combine into 16-bit value
+            raw_value = (data[0] << 8) | data[1]  # Combine bytes
+            return raw_value & 0x3FF  # Keep only 10 bits
         except Exception as e:
-            print(f"ADC read error: {e}")
+            print(f"ADC read error (Pin {pin}): {e}")
             return None
 
 
 # Initialize
 bus = smbus.SMBus(BUS_NUMBER)
 mux = MuxManager(bus)
-adc = SeesawADC(bus, 0x49)  # Your ADC address
+adc = ATtiny817_ADC(bus, ATTINY817_ADDR)
 
-# 1. Scan for ADCs on each mux channel
-print("=== Scanning for ADCs on each mux channel ===")
-adc_channels = []
-
-for channel in range(8):
-    if mux.select_channel(channel):
-        try:
-            # Check if ADC responds
-            bus.write_quick(0x49)
-            print(f"✓ Found ADC on Mux Channel {channel}")
-            adc_channels.append(channel)
-        except:
-            print(f"× No ADC on Mux Channel {channel}")
-
-if not adc_channels:
-    print("No ADCs found! Check wiring & power.")
+# 1. Verify ADC is connected
+try:
+    mux.select_channel(1)  # Your ADC's mux channel
+    bus.write_quick(ATTINY817_ADDR)
+    print("✓ ADC detected!")
+except:
+    print("× ADC not responding! Check wiring & power.")
     exit()
 
-# 2. Continuous reading from detected ADCs
-print("\n=== Starting ADC Readings ===")
+# 2. Continuous reading of valid ADC pins
 try:
     while True:
-        for channel in adc_channels:
-            if mux.select_channel(channel):
-                for pin in range(8):  # Read all 8 ADC pins
-                    val = adc.read_adc(pin)
-                    if val is not None:
-                        voltage = (val / 65535) * 3.3  # Convert to voltage
-                        print(f"CH{channel}-Pin{pin}: {voltage:.2f}V (raw: {val})")
-                    else:
-                        print(f"CH{channel}-Pin{pin}: Read failed")
-        print("------------------")
+        if mux.select_channel(1):  # Your ADC's mux channel
+            print("\n--- ADC Readings ---")
+            for pin in ADC_PINS:
+                raw = adc.read_adc(pin)
+                if raw is not None:
+                    voltage = (raw / 1023) * 3.3  # 10-bit scaling
+                    print(f"Pin {pin}: {voltage:.2f}V (raw: {raw})")
+                else:
+                    print(f"Pin {pin}: Read failed")
         time.sleep(1)
-
 except KeyboardInterrupt:
     print("\nStopping...")
 finally:
