@@ -1,97 +1,105 @@
 import time
 import smbus
+from collections import defaultdict
 
-# I2C addresses
-TCA9548A_ADDR = 0x70
-ATTINY817_ADDR = 0x36  # Default Seesaw address
+# Hardware Configuration
+TCA9548A_ADDR = 0x70  # Mux address
+BUS_NUMBER = 1  # 1 for Pi 3/4, 0 for older models
 
-# Initialize I2C bus (1 for newer Pi, 0 for very old Pi)
-bus = smbus.SMBus(1)
 
-class TCA9548A:
-    def __init__(self, bus, address=TCA9548A_ADDR):
+class I2CScanner:
+    def __init__(self, bus):
         self.bus = bus
-        self.address = address
 
-    def select_channel(self, channel):
-        """Select one of 0-7 channels"""
-        if 0 <= channel <= 7:
-            self.bus.write_byte(self.address, 1 << channel)
-        else:
-            raise ValueError("Channel must be 0-7")
+    def scan_channel(self, mux_channel=None):
+        """Scan for devices on a specific mux channel or main bus"""
+        found = []
+
+        if mux_channel is not None:
+            # Select mux channel
+            self.bus.write_byte(TCA9548A_ADDR, 1 << mux_channel)
+            time.sleep(0.01)
+
+        # Scan all possible I2C addresses
+        for addr in range(0x03, 0x78):
+            try:
+                self.bus.write_quick(addr)
+                found.append(addr)
+                time.sleep(0.001)
+            except:
+                pass
+
+        # Reset mux if used
+        if mux_channel is not None:
+            self.bus.write_byte(TCA9548A_ADDR, 0x00)
+
+        return found
+
 
 class SeesawADC:
-    def __init__(self, bus, address=ATTINY817_ADDR):
+    def __init__(self, bus, address):
         self.bus = bus
         self.address = address
 
     def read_adc(self, pin):
         """Read ADC value from specified pin (0-7)"""
-        if pin < 0 or pin > 7:
-            raise ValueError("Pin must be 0-7")
-
-        # Seesaw command format for ADC reading
-        # 0x09 = ADC module base address
-        # 0x07 = ADC channel offset
-        self.bus.write_i2c_block_data(self.address, 0x09, [0x07 + pin])
-
-        # Small delay for conversion
-        time.sleep(0.01)
-
-        # Read 2 bytes of data
-        result = self.bus.read_i2c_block_data(self.address, 0x09, 2)
-
-        # Combine bytes into 16-bit value
-        return (result[0] << 8) | result[1]
-
-# Initialize components
-mux = TCA9548A(bus)
-adc = SeesawADC(bus)
-
-def read_all_channels():
-    """Read all ADC channels on all mux channels"""
-    results = {}
-
-    for mux_channel in range(8):
         try:
-            # Select mux channel
-            mux.select_channel(mux_channel)
+            # Seesaw command format
+            self.bus.write_i2c_block_data(self.address, 0x09, [0x07 + pin])
+            time.sleep(0.01)
+            data = self.bus.read_i2c_block_data(self.address, 0x09, 2)
+            return (data[0] << 8) | data[1]
+        except Exception as e:
+            print(f"Read error on 0x{self.address:02x}: {e}")
+            return None
 
-            # Test if device exists by attempting a read
-            adc.read_adc(0)
 
-            # Read all ADC pins if device exists
-            channel_results = {}
-            for pin in range(8):
-                try:
-                    value = adc.read_adc(pin)
-                    voltage = (value / 65535) * 3.3  # Convert to voltage (assuming 3.3V reference)
-                    channel_results[f"Pin {pin}"] = f"{voltage:.2f}V"
-                except IOError:
-                    channel_results[f"Pin {pin}"] = "Error"
+# Initialize
+bus = smbus.SMBus(BUS_NUMBER)
+scanner = I2CScanner(bus)
 
-            results[f"Mux {mux_channel}"] = channel_results
+print("=== Scanning for devices ===")
 
-        except IOError:
-            results[f"Mux {mux_channel}"] = "No device"
+# 1. First detect all connected ADCs
+device_map = defaultdict(dict)  # {mux_channel: {address: device}}
 
-    return results
+for channel in range(8):
+    found = scanner.scan_channel(channel)
+    if found:
+        print(f"Mux {channel}: Found devices at {[hex(x) for x in found]}")
+        for addr in found:
+            # Test if it's a seesaw device
+            try:
+                ss = SeesawADC(bus, addr)
+                if ss.read_adc(0) is not None:  # Test read
+                    device_map[channel][addr] = ss
+                    print(f"  ✓ Confirmed Seesaw at 0x{addr:02x}")
+            except:
+                pass
 
-# Main reading loop
+if not device_map:
+    print("No Seesaw devices found!")
+    exit()
+
+# 2. Continuous reading of found devices
+print("\n=== Starting continuous reading ===")
 try:
     while True:
-        print("\nReading all ADCs...")
-        readings = read_all_channels()
+        for channel, devices in device_map.items():
+            # Select mux channel
+            bus.write_byte(TCA9548A_ADDR, 1 << channel)
+            time.sleep(0.01)
 
-        for mux_ch, pins in readings.items():
-            print(f"\n{mux_ch}:")
-            if isinstance(pins, dict):
-                for pin, value in pins.items():
-                    print(f"  {pin}: {value}")
-            else:
-                print(f"  {pins}")
+            for addr, adc in devices.items():
+                print(f"\nMux {channel}, ADC 0x{addr:02x}:")
+                for pin in range(8):
+                    val = adc.read_adc(pin)
+                    if val is not None:
+                        voltage = (val / 65535) * 3.3
+                        print(f"  Pin {pin}: {voltage:.2f}V (raw: {val})")
 
-        time.sleep(1)
+        time.sleep(1)  # Delay between full scans
 
 except KeyboardInterrupt:
-    print("\nExiting...")
+    print("\nStopping...")
+    bus.write_byte(TCA9548A_ADDR, 0x00)  # Reset mux
