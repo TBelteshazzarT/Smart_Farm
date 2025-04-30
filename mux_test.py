@@ -1,9 +1,21 @@
 import time
 import board
 import busio
-from adafruit_tca9548a import TCA9548A
+#from adafruit_tca9548a import TCA9548A
 from adafruit_seesaw.seesaw import Seesaw
 from adafruit_seesaw.analoginput import AnalogInput
+
+import smbus
+
+
+class TCA9548A:
+    def __init__(self, bus, address=0x70):
+        self.bus = bus
+        self.address = address
+
+    def set_channel(self, channel):
+        if 0 <= channel <= 7:
+            self.bus.write_byte(self.address, 1 << channel)
 
 # Initialize I2C bus
 i2c = busio.I2C(board.SCL, board.SDA)
