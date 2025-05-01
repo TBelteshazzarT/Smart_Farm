@@ -18,27 +18,36 @@ ADC_PINS = [0, 1, 2, 3, 6, 7, 18, 19, 20]
 
 
 class TCA9548A:
+    def __init__(self, bus):
+        """Initialize with I2C bus object"""
+        self.bus = bus  # Store the bus object
+        self.current_channel = None
+
     def select_channel(self, channel):
         """Select channel with verification"""
         try:
-            print(f"Attempting to select CH{channel}...")
+            # Skip if already on this channel
+            if self.current_channel == channel:
+                return True
+
             # Disable all channels first
             self.bus.write_byte(TCA9548A_ADDR, 0x00)
             time.sleep(SCAN_DELAY)
 
             # Enable target channel
-            print(f"Enabling CH{channel}...")
             self.bus.write_byte(TCA9548A_ADDR, 1 << channel)
             time.sleep(SCAN_DELAY)
 
             # Verify selection
             active = self.bus.read_byte(TCA9548A_ADDR)
-            print(f"Active channels: {bin(active)}")
             if active != (1 << channel):
                 raise IOError(f"Channel {channel} not activated (got {bin(active)})")
+
+            self.current_channel = channel
             return True
         except Exception as e:
             print(f"Mux Error (CH{channel}): {str(e)}")
+            self.current_channel = None
             return False
 
 
