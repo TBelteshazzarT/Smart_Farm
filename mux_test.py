@@ -7,10 +7,14 @@ TCA9548A_ADDR = 0x70
 BUS_NUMBER = 1
 SCAN_DELAY = 0.15  # Increased delay for stability
 
-# ADC Configuration
-ADC_PINS = [0, 1, 2, 3, 6, 7, 18, 19, 20]
+# Seesaw Registers (from Adafruit Seesaw library)
+SEESAW_STATUS_BASE = 0x00
+SEESAW_GPIO_BASE = 0x01
 SEESAW_ADC_BASE = 0x09
-ADC_READ_DELAY = 0.05  # Longer delay for ADC conversion
+SEESAW_ADC_CHANNEL_OFFSET = 0x07
+SEESAW_ADC_PINMODE = 0x00  # Set pin to analog input
+
+ADC_PINS = [0, 1, 2, 3, 6, 7, 18, 19, 20]
 
 
 class TCA9548A:
@@ -37,15 +41,26 @@ class TCA9548A:
             print(f"Mux Error (CH{channel}): {str(e)}")
             return False
 
-
 class SeesawADC:
     def __init__(self, bus, address):
         self.bus = bus
         self.address = address
+        self._initialize_adc()
+
+    def _initialize_adc(self):
+        """Initialize ADC pins as analog inputs"""
+        for pin in ADC_PINS:
+            # Set pin mode to analog input
+            self.bus.write_i2c_block_data(
+                self.address,
+                SEESAW_GPIO_BASE,
+                [SEESAW_ADC_PINMODE, pin]
+            )
+            time.sleep(0.01)
 
     def _read_reg(self, reg, length=2):
         """Generic register read with retries"""
-        for _ in range(3):  # Retry up to 3 times
+        for _ in range(3):
             try:
                 return self.bus.read_i2c_block_data(self.address, reg, length)
             except OSError as e:
@@ -58,17 +73,21 @@ class SeesawADC:
     def read_adc(self, pin):
         """Read ADC pin with proper seesaw protocol"""
         try:
+            # For Seesaw, we need to use the channel offset register
+            reg = SEESAW_ADC_BASE + SEESAW_ADC_CHANNEL_OFFSET
+
             # Write pin number to ADC register
             self.bus.write_i2c_block_data(
                 self.address,
-                SEESAW_ADC_BASE,
-                [pin & 0xFF]
+                reg,
+                [pin]
             )
-            time.sleep(ADC_READ_DELAY)  # Critical for conversion
+            time.sleep(0.1)  # Allow time for conversion
 
-            # Read 2-byte result
-            data = self._read_reg(SEESAW_ADC_BASE)
-            return (data[0] << 8) | data[1]
+            # Read 2-byte result (MSB first)
+            data = self._read_reg(reg, 2)
+            raw_value = (data[0] << 8) | data[1]
+            return raw_value
         except Exception as e:
             print(f"ADC Read Error (Pin {pin}): {str(e)}")
             return None
