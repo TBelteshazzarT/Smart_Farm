@@ -44,16 +44,17 @@ class SeesawADC:
         self.address = address
 
     def _read_reg(self, reg, length=2):
-        """Generic register read with retries"""
         for _ in range(3):
             try:
                 data = self.bus.read_i2c_block_data(self.address, reg, length)
-                print(f"Debug: reg 0x{reg:02x} = {data}")  # Debug output
+                print(f"Raw I2C Read (reg 0x{reg:02x}): {data}")  # Debug
+                if data == [255, 255] or data == [127, 127]:
+                    raise IOError("Suspicious data pattern")
                 return data
             except OSError as e:
-                print(f"Retrying... Error: {e}")
-                time.sleep(0.1)
-        raise IOError(f"Failed after 3 retries (reg 0x{reg:02x})")
+                print(f"I2C Error: {e}")
+                time.sleep(0.01)
+        raise IOError("I2C read failed after retries")
 
     def read_adc(self, pin):
         try:
@@ -70,7 +71,8 @@ class SeesawADC:
             return None
 
 # Initialize
-bus = smbus.SMBus(BUS_NUMBER)
+bus = smbus.SMBus(1)  # Initialize first
+bus.write_byte_data(TCA9548A_ADDR, 0x00, 0x04)  # Explicit 100kHz mode
 mux = TCA9548A(bus)
 
 # Scan for devices
