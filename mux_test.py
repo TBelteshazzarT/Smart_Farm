@@ -56,23 +56,16 @@ class SeesawADC:
         raise IOError(f"Failed after 3 retries (reg 0x{reg:02x})")
 
     def read_adc(self, pin):
-        """Read ADC pin using official seesaw protocol"""
         try:
-            # Step 1: Write module base (0x09) + pin number
-            self.bus.write_i2c_block_data(
-                self.address,
-                SEESAW_ADC_BASE,  # 0x09 = ADC module base
-                [pin & 0xFF]      # Function register = pin number
-            )
-            time.sleep(0.001)  # 1ms delay for conversion
+            # Step 1: Request ADC conversion
+            self.bus.write_i2c_block_data(self.address, SEESAW_ADC_BASE, [pin])
+            time.sleep(0.001)
 
-            # Step 2: Read 2-byte result
-            data = self._read_reg(SEESAW_ADC_BASE)
-            raw_value = (data[0] << 8) | data[1]
-            print(f"Pin {pin}: raw={raw_value} (0x{raw_value:04x})")  # Debug
-            return raw_value
+            # Step 2: Read from ADC result register (e.g., 0x07)
+            data = self._read_reg(0x07)  # Try other registers if 0x07 fails
+            return (data[0] << 8) | data[1]
         except Exception as e:
-            print(f"ADC Read Error (Pin {pin}): {str(e)}")
+            print(f"Error: {e}")
             return None
 
 # Initialize
