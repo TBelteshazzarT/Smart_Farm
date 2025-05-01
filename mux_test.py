@@ -41,53 +41,67 @@ class TCA9548A:
             print(f"Mux Error (CH{channel}): {str(e)}")
             return False
 
+
 class SeesawADC:
     def __init__(self, bus, address):
         self.bus = bus
         self.address = address
-        self._initialize_adc()
+        self._verify_device()
 
-    def _initialize_adc(self):
-        """Initialize ADC pins as analog inputs"""
-        for pin in ADC_PINS:
-            # Set pin mode to analog input
-            self.bus.write_i2c_block_data(
-                self.address,
-                SEESAW_GPIO_BASE,
-                [SEESAW_ADC_PINMODE, pin]
-            )
-            time.sleep(0.01)
+    def _verify_device(self):
+        """Verify the device is present and responding"""
+        try:
+            # Read status register (should always work if device is present)
+            status = self._read_reg(SEESAW_STATUS_BASE, 1)
+            print(f"Device 0x{self.address:02x} verified (status: 0x{status[0]:02x})")
+            return True
+        except Exception as e:
+            print(f"Device verification failed at 0x{self.address:02x}: {str(e)}")
+            return False
 
     def _read_reg(self, reg, length=2):
-        """Generic register read with retries"""
-        for _ in range(3):
+        """More robust register read"""
+        for attempt in range(5):  # Increased retry count
             try:
+                # Ensure channel is still selected
+                mux.select_channel(TARGET_CHANNEL)
+
+                # Add small delay before each attempt
+                time.sleep(0.05 * (attempt + 1))
+
                 return self.bus.read_i2c_block_data(self.address, reg, length)
             except OSError as e:
                 if e.errno == 121:  # Remote I/O error
-                    time.sleep(0.1)
+                    print(f"Attempt {attempt + 1} failed for reg 0x{reg:02x}")
+                    if attempt == 4:  # Last attempt
+                        raise IOError(f"Failed after 5 retries (reg 0x{reg:02x})")
                     continue
                 raise
-        raise IOError(f"Failed after 3 retries (reg 0x{reg:02x})")
 
     def read_adc(self, pin):
-        """Read ADC pin with proper seesaw protocol"""
+        """Modified ADC read with better error handling"""
         try:
-            # For Seesaw, we need to use the channel offset register
-            reg = SEESAW_ADC_BASE + SEESAW_ADC_CHANNEL_OFFSET
+            # First verify device is responsive
+            if not self._verify_device():
+                return None
 
-            # Write pin number to ADC register
-            self.bus.write_i2c_block_data(
-                self.address,
-                reg,
-                [pin]
-            )
-            time.sleep(0.1)  # Allow time for conversion
+            # Use correct register (0x10 for ADC readings)
+            reg = 0x10
 
-            # Read 2-byte result (MSB first)
+            # Write pin number (single byte)
+            mux.select_channel(TARGET_CHANNEL)
+            self.bus.write_byte_data(self.address, reg, pin)
+
+            # Wait for conversion (longer delay)
+            time.sleep(0.2)
+
+            # Read result
+            mux.select_channel(TARGET_CHANNEL)
             data = self._read_reg(reg, 2)
-            raw_value = (data[0] << 8) | data[1]
-            return raw_value
+
+            # Combine bytes (MSB first)
+            return (data[0] << 8) | data[1]
+
         except Exception as e:
             print(f"ADC Read Error (Pin {pin}): {str(e)}")
             return None
