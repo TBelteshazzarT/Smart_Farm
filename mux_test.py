@@ -57,12 +57,13 @@ class SeesawADC:
 
     def read_adc(self, pin):
         try:
-            # Step 1: Request ADC conversion
-            self.bus.write_i2c_block_data(self.address, SEESAW_ADC_BASE, [pin])
-            time.sleep(0.001)
+            # Request conversion on pin
+            self.bus.write_i2c_block_data(self.address, 0x09, [pin])
+            time.sleep(0.01)  # 10ms delay for conversion
 
-            # Step 2: Read from ADC result register (e.g., 0x07)
-            data = self._read_reg(0x07)  # Try other registers if 0x07 fails
+            # Read result from 0x09
+            data = self._read_reg(0x09)
+            print(f"Raw bytes from 0x09: {data}")  # Expect [high_byte, low_byte]
             return (data[0] << 8) | data[1]
         except Exception as e:
             print(f"Error: {e}")
