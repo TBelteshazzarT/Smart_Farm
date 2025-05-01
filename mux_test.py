@@ -45,34 +45,35 @@ class SeesawADC:
 
     def _read_reg(self, reg, length=2):
         """Generic register read with retries"""
-        for _ in range(3):  # Retry up to 3 times
+        for _ in range(3):
             try:
-                return self.bus.read_i2c_block_data(self.address, reg, length)
+                data = self.bus.read_i2c_block_data(self.address, reg, length)
+                print(f"Debug: reg 0x{reg:02x} = {data}")  # Debug output
+                return data
             except OSError as e:
-                if e.errno == 121:  # Remote I/O error
-                    time.sleep(0.1)
-                    continue
-                raise
+                print(f"Retrying... Error: {e}")
+                time.sleep(0.1)
         raise IOError(f"Failed after 3 retries (reg 0x{reg:02x})")
 
     def read_adc(self, pin):
-        """Read ADC pin with proper seesaw protocol"""
+        """Read ADC pin using official seesaw protocol"""
         try:
-            # Write pin number to ADC register
+            # Step 1: Write module base (0x09) + pin number
             self.bus.write_i2c_block_data(
                 self.address,
-                SEESAW_ADC_BASE,
-                [pin & 0xFF]
+                SEESAW_ADC_BASE,  # 0x09 = ADC module base
+                [pin & 0xFF]      # Function register = pin number
             )
-            time.sleep(ADC_READ_DELAY)  # Critical for conversion
+            time.sleep(0.001)  # 1ms delay for conversion
 
-            # Read 2-byte result
+            # Step 2: Read 2-byte result
             data = self._read_reg(SEESAW_ADC_BASE)
-            return (data[0] << 8) | data[1]
+            raw_value = (data[0] << 8) | data[1]
+            print(f"Pin {pin}: raw={raw_value} (0x{raw_value:04x})")  # Debug
+            return raw_value
         except Exception as e:
             print(f"ADC Read Error (Pin {pin}): {str(e)}")
             return None
-
 
 # Initialize
 bus = smbus.SMBus(BUS_NUMBER)
